@@ -1,0 +1,2 @@
+<|fork|>goal=compact_context
+<|halt|>status=success

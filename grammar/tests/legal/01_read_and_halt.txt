@@ -1,0 +1,3 @@
+<|read|>fd=3 len=128
+<|result|>hello world<|/result|>
+<|halt|>status=success

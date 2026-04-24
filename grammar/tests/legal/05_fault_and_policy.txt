@@ -1,0 +1,8 @@
+<|think|>planning next move<|/think|>
+<|yield|>
+<|commit|>{"plan":"retry with lower speed"}
+<|fault|>{"kind":"schema_violation","needs_cloud":true}
+<|result|>{"cloud_response":"use speed=100"}<|/result|>
+<|policy|>
+<|result|>{"allowed":["read","write","call.roclaw.forward","call.roclaw.turn_left"]}<|/result|>
+<|halt|>status=partial

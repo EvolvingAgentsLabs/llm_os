@@ -1,0 +1,3 @@
+<|loop|>goal=x
+<|halt|>status=success
+<|break|>

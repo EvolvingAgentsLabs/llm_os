@@ -1,0 +1,3 @@
+<|write|>fd=1 {"msg":"ready"}
+<|ack|>
+<|halt|>status=success

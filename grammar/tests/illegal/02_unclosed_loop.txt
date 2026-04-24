@@ -1,0 +1,3 @@
+<|loop|>goal=x
+<|think|>never breaks<|/think|>
+<|halt|>status=failure

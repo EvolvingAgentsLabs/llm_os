@@ -1,0 +1,9 @@
+<|loop|>goal=navigate_to_kitchen
+<|think|>I see a hallway. Kitchen is left.<|/think|>
+<|call|>roclaw.turn_left {"degrees":90} <|/call|>
+<|result|>ok<|/result|>
+<|call|>roclaw.get_camera {} <|/call|>
+<|result|>{"img":"base64..."}<|/result|>
+<|think|>I now see the kitchen.<|/think|>
+<|break|>
+<|halt|>status=success
