@@ -22,6 +22,7 @@ use crate::cartridge::CartridgeRegistry;
 use crate::cloud::{CloudConfig, Message as CloudMessage};
 use crate::dispatch::{dispatch as dispatch_call, DispatchError};
 use crate::parser::{parse_statement, HaltStatus, OpcodeStream, Statement};
+use crate::scheduler::{Budget, PreemptReason, Scheduler, SchedulerState};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -50,6 +51,12 @@ pub struct DaemonConfig {
     /// trace shape documented in `docs/fine-tune-recipe.md` §1. Used to
     /// build the v0.1 fine-tune dataset.
     pub trace_path: Option<String>,
+    /// Hard token budget per task — preemptive scheduler forces
+    /// `<|halt|>partial` when exceeded. v0.5+.
+    pub max_tokens_per_task: u64,
+    /// Optional task slot id used by the multi-task layer for KV
+    /// isolation against llama-server's slot pool. v0.5+.
+    pub slot_id: Option<i32>,
 }
 
 impl Default for DaemonConfig {
@@ -63,6 +70,8 @@ impl Default for DaemonConfig {
             temperature: 0.2,
             max_predict_per_segment: 512,
             trace_path: None,
+            max_tokens_per_task: 32_768,
+            slot_id: None,
         }
     }
 }
@@ -75,6 +84,10 @@ struct CompletionRequest {
     cache_prompt: bool,
     n_predict: u32,
     temperature: f64,
+    /// llama-server slot id for multi-task KV isolation (v0.5+).
+    /// `-1` means "any free slot".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id_slot: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,19 +148,38 @@ impl Daemon {
         let mut raw_stream = String::new();
         let mut cartridges_used: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
+        let mut sched = Scheduler::new(Budget {
+            wall: self.cfg.task_budget,
+            max_tokens: self.cfg.max_tokens_per_task,
+            soft_preempt_ratio: 0.8,
+        });
 
         let outcome = loop {
-            if started.elapsed() > self.cfg.task_budget {
-                log::warn!("task budget exceeded; forcing halt");
-                break TaskOutcome {
-                    status: HaltStatus::Partial,
-                    steps,
-                    final_prompt: prompt.clone(),
-                };
+            // v0.5: scheduler-driven preemption replaces the bare wall-clock
+            // check. Wall + token budgets unified, soft warning at 80%.
+            match sched.check() {
+                SchedulerState::HardPreempt { reason } => {
+                    log::warn!(
+                        "scheduler hard-preempt ({:?}): forcing partial halt at step {steps}",
+                        reason
+                    );
+                    // Inject a partial-halt directly into the prompt so
+                    // the trace shows the task ended at OS request, not
+                    // at model preference.
+                    prompt.push_str("<|halt|>status=partial\n");
+                    raw_stream.push_str("<|halt|>status=partial\n");
+                    break TaskOutcome {
+                        status: HaltStatus::Partial,
+                        steps,
+                        final_prompt: prompt.clone(),
+                    };
+                }
+                SchedulerState::SoftPreempt | SchedulerState::Run => {}
             }
 
             let segment = self.complete_one_segment(&prompt)?;
             log::debug!("segment ({} bytes): {:?}", segment.len(), trim_for_log(&segment));
+            sched.account_segment_bytes(segment.len());
             prompt.push_str(&segment);
             raw_stream.push_str(&segment);
             stream.feed(&segment);
@@ -365,8 +397,23 @@ impl Daemon {
 
         match dispatch_call(&self.registry, cart, method, args) {
             Ok(v) => v,
-            Err(DispatchError::SchemaViolation { errors, .. }) => {
-                json!({"ok": false, "error": "schema_violation", "details": errors})
+            Err(DispatchError::SchemaViolation {
+                errors,
+                expected_grammar,
+                ..
+            }) => {
+                // v0.5: surface the compiled GBNF so the model sees the
+                // exact shape it should have emitted. Increases retry
+                // success rate vs v0.01's bare schema-violation message.
+                let mut payload = json!({
+                    "ok": false,
+                    "error": "schema_violation",
+                    "details": errors,
+                });
+                if let Some(g) = expected_grammar {
+                    payload["expected_grammar"] = Value::String(g);
+                }
+                payload
             }
             Err(e) => json!({"ok": false, "error": format!("{e}")}),
         }
@@ -444,6 +491,7 @@ impl Daemon {
             cache_prompt: true,
             n_predict: self.cfg.max_predict_per_segment,
             temperature: self.cfg.temperature,
+            id_slot: self.cfg.slot_id,
         };
 
         let url = format!("{}/v1/completions", self.cfg.server_url);

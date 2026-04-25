@@ -26,6 +26,11 @@ pub enum DispatchError {
         cart: String,
         method: String,
         errors: Vec<String>,
+        /// v0.5: the compiled GBNF for this method, if available, so the
+        /// daemon can surface "this is what you should have emitted" in
+        /// the result. Decode-time enforcement (true mid-stream grammar
+        /// swap) is v1.0 — see docs/grammar-swap-design.md.
+        expected_grammar: Option<String>,
     },
     #[error("handler error in '{cart}.{method}': {message}")]
     HandlerError {
@@ -65,6 +70,7 @@ pub fn dispatch(
             cart: cart_name.to_string(),
             method: method.to_string(),
             errors,
+            expected_grammar: cart.args_grammar(method).map(str::to_string),
         });
     }
 
@@ -89,6 +95,21 @@ fn stub_handler(cart: &str, method: &str) -> DispatchResult {
 /// [`crate::handlers`]). The previous v0.01 stub is gone — every shipped
 /// cartridge now has a real body.
 fn builtin_handler(cart: &Cartridge, method: &str, args: &Value) -> Option<DispatchResult> {
+    // v0.5: subagent cartridges route through runtime::subagent with an
+    // injected CloudProxy. They never hit the regular handler table.
+    if cart.manifest.subagent {
+        if let Some(sa) = crate::subagent::builtin(cart.name()) {
+            let proxy = crate::subagent::CloudProxy::from_env();
+            return Some(sa.dispatch(method, args, &proxy));
+        }
+        // subagent: true but no built-in registered — that's a manifest
+        // bug. Surface as DispatchError rather than the v0.01 stub.
+        return Some(Err(DispatchError::HandlerError {
+            cart: cart.name().into(),
+            method: method.into(),
+            message: "subagent:true cartridge has no registered builtin (v0.5 only loads built-in subagents)".into(),
+        }));
+    }
     match cart.name() {
         "roclaw" => Some(roclaw_handler::dispatch(method, args)),
         "sim_world" => Some(sim_world_handler::dispatch(method, args)),

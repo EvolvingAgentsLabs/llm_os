@@ -40,7 +40,7 @@ A `manifest.json` is a JSON object with the following keys.
 | `preferred_tier` | `"local"` \| `"cloud"` \| `"auto"` | — | `"auto"` | Routing hint mirroring skillos_mini's tier system. v0.01 always routes locally; v0.1 wires the proactive cloud path so cartridges that say `"cloud"` skip the local model entirely. |
 | `methods` | object | ✓ | — | Map of method-name → method spec. See below. |
 | `post_validators` | string[] | — | `[]` | Names of post-flow validators (resolved against the daemon's `BUILTIN_VALIDATORS` registry) fired on `<\|halt\|>` to check cross-blackboard invariants. Mirrors skillos_mini post-flow validators. v0.01 logs only; v0.1 enforces. |
-| `subagent` | bool | — | `false` | **Reserved for v0.5.** Flags a cartridge that itself runs sub-inference via an injected LLM proxy (skillos_mini JS-skills pattern). Always `false` in v0.01. |
+| `subagent` | bool | — | `false` | Flags a cartridge that itself runs sub-inference via an injected LLM proxy. Routes through `runtime/subagent.rs` instead of the regular handler table. **v0.5+**: built-in subagents only (`summarize` is the reference). v1.0 adds dynamic loading. |
 
 ### Method spec
 
@@ -98,4 +98,4 @@ The cartridge dir then contains `cart/domestic/cooking/{manifest.json, schemas/*
 - **Capability enforcement at decode.** `allowed_opcodes` is informational. v0.1 wires per-cartridge logit bias so a cartridge that doesn't permit `<|fault|>` cannot emit it.
 - **Persistent state per cartridge.** `<|commit|>` writes to a per-session JSON file in v0.01. The cartridge-memory abstraction lands in v0.1.
 - **Tier-aware proactive cloud routing.** `preferred_tier: "cloud"` is read but ignored in v0.01 — every call routes locally. v0.1 wires the proactive cloud path.
-- **Subagent cartridges.** The `subagent: true` field is reserved but rejected by the loader in v0.01.
+- **Dynamic subagent loading.** `subagent: true` cartridges are accepted in v0.5 but only resolve to built-ins. v1.0 adds WASM-sandboxed loading.

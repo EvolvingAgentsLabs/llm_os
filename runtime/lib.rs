@@ -9,15 +9,19 @@
 //! - [`cloud`] — cloud-fallback HTTP adapter for `<|fault|>{"needs_cloud":true}`.
 //! - [`iod`] — the I/O daemon main loop (streaming SSE consumer).
 
+pub mod capability;
 pub mod cartridge;
 pub mod cloud;
 pub mod dialect;
 pub mod dispatch;
 pub mod handlers;
 pub mod iod;
+pub mod multitask;
 pub mod parser;
 pub mod roclaw;
+pub mod scheduler;
 pub mod schema_to_gbnf;
+pub mod subagent;
 pub mod swap;
 pub mod tool_parser;
 

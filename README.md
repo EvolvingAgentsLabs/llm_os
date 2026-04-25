@@ -54,11 +54,11 @@ bash scripts/validate_grammar.sh
 
 Legal fixtures MUST pass, illegal ones MUST fail — both cases are equally important: the grammar is a contract between sampler and I/O daemon, and wrong-rejection is as bad as wrong-acceptance.
 
-## Status — `v0.1-rc1` tagged 2026-04-25 (`v0.01` two days prior)
+## Status — `v0.5-rc1` tagged 2026-04-25 (after `v0.01` and `v0.1-rc1` the same day)
 
-`v0.1-rc1` lands real cartridge bodies, per-method GBNF compilation, proactive tier-based cloud routing, the dialect framework, the fine-tune recipe + tokenizer rebuild script, the trace collection scaffold, and the prep re-baseline of capability projections. The "-rc" denotes that the kernel fine-tune itself runs on the user's GPU host per [`docs/fine-tune-recipe.md`](docs/fine-tune-recipe.md); the final `v0.1` tag waits for measured kernel-v0.1 numbers per [`docs/projection-rebaseline-2026-04-25.md`](docs/projection-rebaseline-2026-04-25.md) §4.
+`v0.5-rc1` lands the OS-internals work that doesn't require the v0.1 kernel fine-tune to be done first: preemptive scheduler with hard preempt, multi-task isolation via llama-server slots, capability enforcement via logit bias, subagent cartridges (with the `summarize` reference), and the self-hosting trace promotion pipeline. The "-rc" denotes that multi-task and capability layers need Pi-5 measurement before the final tag; see [`RELEASE_NOTES_v0.5.md`](RELEASE_NOTES_v0.5.md) "v0.5 final gate."
 
-See [`RELEASE_NOTES_v0.1.md`](RELEASE_NOTES_v0.1.md) for the v0.1 changelog and [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the v0.01 baseline.
+See also [`RELEASE_NOTES_v0.1.md`](RELEASE_NOTES_v0.1.md) (v0.1 changelog) and [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (v0.01 baseline).
 
 | Week | Deliverable | Status |
 |---|---|:---:|
