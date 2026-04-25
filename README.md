@@ -40,22 +40,24 @@ Full spec with semantics, invariants, and legal/illegal examples: [`grammar/isa-
 ## Quickstart — validate the grammar
 
 ```bash
-# One-time: build llama.cpp's validator
+# One-time: build llama.cpp's validator (renamed `test-gbnf-validator` upstream;
+# requires static libs on Windows or it's gated out — see refinement §1.4).
 git clone --depth 1 https://github.com/ggerganov/llama.cpp.git
-cd llama.cpp && cmake -B build -DLLAMA_CURL=OFF && cmake --build build --target llama-gbnf-validator -j
-export PATH="$PWD/build/bin:$PATH"
+cd llama.cpp \
+  && cmake -B build -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_SERVER=OFF -DBUILD_SHARED_LIBS=OFF \
+  && cmake --build build --config Release --target test-gbnf-validator -j
 
-# Run the fixtures
+# Run the fixtures (validate_grammar.sh auto-discovers the binary in ../llama.cpp/build)
 cd /path/to/llm_os
-./scripts/validate_grammar.sh
+bash scripts/validate_grammar.sh
 ```
 
 Legal fixtures MUST pass, illegal ones MUST fail — both cases are equally important: the grammar is a contract between sampler and I/O daemon, and wrong-rejection is as bad as wrong-acceptance.
 
-## Status (2026-04-24)
+## Status (2026-04-25)
 
-- **Week 1 — ISA + GBNF**: grammar drafted + 12 test fixtures. Mechanical validation in progress.
-- **Week 2 — Bootloader + I/O daemon**: skeleton drafts in `runtime/`.
+- **Week 1 — ISA + GBNF**: grammar drafted + 12 test fixtures. **Validated** — `legal: 6/6 pass, illegal: 6/6 fail` via locally-built `test-gbnf-validator`. Two real bugs caught and fixed during validation: (1) `safe-text` was too permissive in result-blocks, (2) multi-line alternations broke GBNF parsing on `top-stmt`/`loop-stmt`. See [`design/llm-os-refinement-2026-04-24.md`](design/llm-os-refinement-2026-04-24.md) §1.4.
+- **Week 2 — Bootloader + I/O daemon**: `runtime/tool_parser.rs` ported from `skillos_mini` (defense-in-depth `<|call|>` parser, 5 tool-call shapes + JSON repair). `bootloader.c` + `iod.rs` next.
 - Weeks 3–6: cartridge adapter → closed-loop validation → RoClaw `/dev/roclaw` bridge → cloud fallback + compactor + v0.01 tag.
 
 See [`docs/plan.md`](docs/plan.md) for the running status.

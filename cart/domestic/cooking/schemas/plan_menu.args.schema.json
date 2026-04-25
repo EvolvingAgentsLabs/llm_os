@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PlanMenuArgs",
+  "type": "object",
+  "required": ["household_size"],
+  "properties": {
+    "household_size": { "type": "integer", "minimum": 1, "maximum": 20 },
+    "dietary_notes":  { "type": "string", "maxLength": 500 },
+    "locale":         { "type": "string", "pattern": "^[a-z]{2}_[A-Z]{2}$" }
+  },
+  "additionalProperties": false
+}

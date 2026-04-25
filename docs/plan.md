@@ -1,23 +1,26 @@
 # Project_llm_os — Plan
 
 ## Status
-Scaffolded 2026-04-24. **Week 1 grammar drafted (not yet validated).**
+Scaffolded 2026-04-24. **Week 1 grammar drafted and mechanically validated 2026-04-25** — all 6 legal fixtures parse, all 6 illegal fixtures reject. See `scripts/validate_grammar.sh`.
 
 > See [`CONTINUATION_PLAN.md`](CONTINUATION_PLAN.md) for the operational playbook with file-level deliverables, acceptance criteria, dependency graph, and risk register. This file is the high-level sketch.
 
 ## Week-by-week
 
-### Week 1 — ISA + GBNF  [DRAFT COMPLETE]
+### Week 1 — ISA + GBNF  [VALIDATED]
 - [x] Draft `isa.gbnf` with 13 opcodes, Qwen 3 2B string-pattern form.
 - [x] Write `isa-spec.md` with opcode table, invariants, kernel-native migration notes.
 - [x] Write 6 legal + 6 illegal test fixtures.
-- [ ] Run `llama-gbnf-validator` on fixtures — **BLOCKED** (validator not installed on this host; build llama.cpp on dev box or Pi).
-- [ ] Sanity-check Qwen 3 2B tokenization of opcode strings via `llama-tokenize`.
+- [x] Run `test-gbnf-validator` on fixtures — `legal: 6/6 pass, illegal: 6/6 fail` (2026-04-25, llama.cpp built locally at `C:/evolvingagents/llama.cpp`).
+- [x] Tighten `result-block` to `json` (was loose `safe-text`); fixtures updated. See refinement §1.4.
+- [x] Fix GBNF alternation syntax bug (multi-line alternations require single-line or paren grouping); collapse `top-stmt` and `loop-stmt`.
+- [x] Sanity-check tokenization of opcode strings via `llama-tokenize`. See `docs/tokenization-report.md`. Headline finding: **`<|think|>` is 1 token on Gemma 4** (vs 5 on Qwen 2/3) — Gemma has it as a native special token, which is a kernel-selection signal in favor of Gemma 4 E2B for the bootstrap kernel.
 
 ### Week 2 — Bootloader + I/O daemon
-- [ ] `bootloader.c` (~200 lines): fork llama.cpp server with `--grammar isa.gbnf --cache-prompt true --reasoning-format none`, open FIFOs, inject boot prompt, wait for `<|ready|>`.
+- [x] `bootloader.c` (~250 lines, POSIX C, no extra deps): fork llama-server, wait-for-bind, POST boot prompt with `stop:["<|ready|>"]`, scan SSE stream, print server PID, exit. **Resolved decision:** bootloader does NOT apply the ISA grammar — daemon applies grammar per-request via the `grammar` field in `/v1/completions`. Avoids needing a `<|ready|>` production in `isa.gbnf`. Linux/Pi 5 only; not testable on the Windows dev box.
+- [x] `runtime/tool_parser.rs` (~430 lines + 16 tests): fallback `<|call|>` parser ported from skillos_mini, defense in depth below the grammar (refinement §2.4 + R9).
 - [ ] `iod.rs` (~500 lines): stream llama.cpp output, dispatch opcodes, inject `<|result|>`/`<|ack|>` blocks, maintain loop-depth counter.
-- [ ] Decide: one-program-per-task vs long-running session with top-level `<|loop|>`.
+- [x] Decide: one-program-per-task vs long-running session — **resolved: many halting programs** (CONTINUATION_PLAN §3).
 
 ### Week 3 — Cartridge adapter
 - [ ] Port `cooking`, `residential-electrical`, `demo` cartridges from `skillos_mini/cartridges/` to `/cart/<name>/` layout with manifest + allowed-opcode list.

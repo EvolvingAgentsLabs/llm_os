@@ -15,31 +15,11 @@ root ::= program
 program ::= top-stmt* halt-stmt
 
 # --- statements legal at loop depth 0 (no <|break|>, <|halt|> allowed) ---
-top-stmt ::= read-stmt
-           | write-stmt
-           | call-stmt
-           | yield-stmt
-           | fork-stmt
-           | wait-stmt
-           | loop-block
-           | think-block
-           | commit-stmt
-           | fault-stmt
-           | policy-stmt
+# NOTE: GBNF requires alternations on a single line OR inside parens.
+top-stmt  ::= read-stmt | write-stmt | call-stmt | yield-stmt | fork-stmt | wait-stmt | loop-block | think-block | commit-stmt | fault-stmt | policy-stmt
 
 # --- statements legal inside a loop (adds <|break|>, forbids <|halt|>) ---
-loop-stmt ::= read-stmt
-            | write-stmt
-            | call-stmt
-            | yield-stmt
-            | fork-stmt
-            | wait-stmt
-            | loop-block
-            | think-block
-            | commit-stmt
-            | fault-stmt
-            | policy-stmt
-            | break-stmt
+loop-stmt ::= read-stmt | write-stmt | call-stmt | yield-stmt | fork-stmt | wait-stmt | loop-block | think-block | commit-stmt | fault-stmt | policy-stmt | break-stmt
 
 # --- opcodes ---
 
@@ -59,8 +39,11 @@ policy-stmt  ::= "<|policy|>" nl result-block
 loop-block   ::= "<|loop|>goal=" label nl loop-stmt* break-stmt
 
 # --- daemon-injected blocks; part of grammar so re-prefill validates ---
+# Result content is always a JSON value (use a JSON string for plain text).
+# This makes the grammar a strict contract: daemon must serialize results,
+# never interpolate raw text. Tightened 2026-04-24 — see refinement §1.4.
 
-result-block ::= "<|result|>" safe-text "<|/result|>" nl
+result-block ::= "<|result|>" json "<|/result|>" nl
 ack          ::= "<|ack|>" nl
 
 # --- terminals ---

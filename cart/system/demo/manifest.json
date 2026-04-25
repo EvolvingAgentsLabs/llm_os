@@ -1,0 +1,17 @@
+{
+  "name": "demo",
+  "version": "0.0.1",
+  "description": "Tiny utility methods for smoke-testing the dispatch + schema-validation pipeline. Used by tests/e2e and by the daemon's own boot self-check.",
+  "allowed_opcodes": ["call"],
+  "preferred_tier": "auto",
+  "methods": {
+    "echo": {
+      "args_schema": "schemas/echo.args.schema.json",
+      "description": "Return the input text unchanged. Used to verify call → result-block round-trip."
+    },
+    "hash": {
+      "args_schema": "schemas/hash.args.schema.json",
+      "description": "Return a hex digest of the input. Stubbed in v0.01."
+    }
+  }
+}

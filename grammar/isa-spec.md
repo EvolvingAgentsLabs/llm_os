@@ -34,7 +34,7 @@ Invariants 4 and 5 mean: the grammar is a *contract between sampler and daemon.*
 
 ```
 <|read|>fd=3 len=128
-<|result|>hello world<|/result|>
+<|result|>"hello world"<|/result|>
 <|halt|>status=success
 ```
 
@@ -54,7 +54,7 @@ Invariants 4 and 5 mean: the grammar is a *contract between sampler and daemon.*
 <|loop|>goal=navigate_to_kitchen
 <|think|>I see a hallway. Kitchen is left.<|/think|>
 <|call|>roclaw.turn_left {"degrees":90} <|/call|>
-<|result|>ok<|/result|>
+<|result|>"ok"<|/result|>
 <|break|>
 <|halt|>status=success
 ```
@@ -121,7 +121,7 @@ Effective throughput on Pi 5 jumps from ~8 Hz × multi-token opcodes (≈1–2 "
 - **Per-cartridge call arg validation.** `<|call|>` args are any JSON. Cartridge schemas are validated runtime-side in the I/O daemon. Compile-time GBNF per cartridge lands in v0.1.
 - **Preemption points.** Preemptive scheduler (Month 6) requires the daemon to be able to inject `<|yield|>` at grammar-legal statement boundaries mid-stream; the current grammar permits yield as a `top-stmt`/`loop-stmt` but there is no mid-argument preemption.
 - **Nested loop depth limit.** Grammar permits unbounded nesting. Runtime daemon SHOULD cap this (proposed: depth ≤ 4).
-- **Result-block contents.** Grammar treats results as opaque text. Per-cartridge result schemas land with the Month 2 compilation path.
+- **Per-cartridge result schemas.** Result-block content is constrained to JSON values (tightened 2026-04-24 — see refinement §1.4); per-cartridge result schemas (e.g. "this `<|call|>roclaw.forward` result must be `{"ok":bool,"bytes":int}`") land with the Month 2 compilation path.
 - **Policy enforcement.** `<|policy|>` returns the current capability set as a daemon message; actual bias changes happen in the daemon, not the grammar.
 
 ## 7. Validation status
