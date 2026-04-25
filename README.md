@@ -54,9 +54,11 @@ bash scripts/validate_grammar.sh
 
 Legal fixtures MUST pass, illegal ones MUST fail — both cases are equally important: the grammar is a contract between sampler and I/O daemon, and wrong-rejection is as bad as wrong-acceptance.
 
-## Status — `v0.01` tagged 2026-04-25
+## Status — `v0.1-rc1` tagged 2026-04-25 (`v0.01` two days prior)
 
-The full six-week sprint per [`docs/CONTINUATION_PLAN.md`](docs/CONTINUATION_PLAN.md) is complete. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the canonical summary of what works, what's stubbed, and what's deferred to v0.1.
+`v0.1-rc1` lands real cartridge bodies, per-method GBNF compilation, proactive tier-based cloud routing, the dialect framework, the fine-tune recipe + tokenizer rebuild script, the trace collection scaffold, and the prep re-baseline of capability projections. The "-rc" denotes that the kernel fine-tune itself runs on the user's GPU host per [`docs/fine-tune-recipe.md`](docs/fine-tune-recipe.md); the final `v0.1` tag waits for measured kernel-v0.1 numbers per [`docs/projection-rebaseline-2026-04-25.md`](docs/projection-rebaseline-2026-04-25.md) §4.
+
+See [`RELEASE_NOTES_v0.1.md`](RELEASE_NOTES_v0.1.md) for the v0.1 changelog and [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the v0.01 baseline.
 
 | Week | Deliverable | Status |
 |---|---|:---:|

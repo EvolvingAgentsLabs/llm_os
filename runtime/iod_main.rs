@@ -37,6 +37,11 @@ struct Args {
     /// Sampler temperature for ISA generation.
     #[arg(long, default_value = "0.2")]
     temperature: f64,
+
+    /// Optional JSONL path; appends one line per task for fine-tune dataset
+    /// collection (see docs/fine-tune-recipe.md §1).
+    #[arg(long)]
+    trace: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -51,6 +56,7 @@ fn main() -> Result<()> {
         max_loop_depth: 4,
         temperature: args.temperature,
         max_predict_per_segment: 512,
+        trace_path: args.trace,
     };
 
     let daemon = Daemon::new(cfg)?;

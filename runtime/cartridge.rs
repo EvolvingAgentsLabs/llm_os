@@ -94,11 +94,16 @@ pub struct MethodSpec {
     pub description: String,
 }
 
-/// A loaded cartridge: manifest + compiled JSON Schemas keyed by method name.
+/// A loaded cartridge: manifest + compiled JSON Schemas + compiled
+/// per-method GBNF sub-grammars (v0.1).
 pub struct Cartridge {
     pub manifest: Manifest,
     pub root: PathBuf,
     schemas: HashMap<String, JSONSchema>,
+    /// Per-method compiled GBNF, keyed by method name. Empty for methods
+    /// whose schema can't be expressed in the v0.1 GBNF subset (those
+    /// fall through to runtime validation only).
+    grammars: HashMap<String, String>,
 }
 
 impl Cartridge {
@@ -111,6 +116,7 @@ impl Cartridge {
         let manifest: Manifest = serde_json::from_str(&std::fs::read_to_string(&manifest_path)?)?;
 
         let mut schemas = HashMap::new();
+        let mut grammars = HashMap::new();
         for (name, spec) in &manifest.methods {
             let schema_path = dir.join(&spec.args_schema);
             let schema_json: Value =
@@ -123,13 +129,41 @@ impl Cartridge {
                     source: e.to_owned(),
                 })?;
             schemas.insert(name.clone(), compiled);
+
+            // v0.1: try to compile a GBNF sub-grammar. Falls through silently
+            // if the schema uses constructs outside the v0.1 subset; the
+            // runtime jsonschema validator still catches violations.
+            let grammar_root = format!("{}-{name}-args", manifest.name);
+            match crate::schema_to_gbnf::compile(&schema_json, &grammar_root) {
+                Ok(gbnf) => {
+                    grammars.insert(name.clone(), gbnf);
+                }
+                Err(e) => {
+                    log::debug!(
+                        "{}.{name} schema not GBNF-compilable in v0.1 subset: {e}",
+                        manifest.name
+                    );
+                }
+            }
         }
 
         Ok(Cartridge {
             manifest,
             root: dir.to_path_buf(),
             schemas,
+            grammars,
         })
+    }
+
+    /// Compiled GBNF for a method's args schema, or `None` if the schema
+    /// uses constructs outside the v0.1 subset.
+    pub fn args_grammar(&self, method: &str) -> Option<&str> {
+        self.grammars.get(method).map(String::as_str)
+    }
+
+    /// All compiled grammars, for materialization to disk.
+    pub fn all_grammars(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.grammars.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 
     pub fn name(&self) -> &str {

@@ -11,10 +11,13 @@
 
 pub mod cartridge;
 pub mod cloud;
+pub mod dialect;
 pub mod dispatch;
+pub mod handlers;
 pub mod iod;
 pub mod parser;
 pub mod roclaw;
+pub mod schema_to_gbnf;
 pub mod swap;
 pub mod tool_parser;
 

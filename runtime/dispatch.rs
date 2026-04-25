@@ -84,12 +84,19 @@ fn stub_handler(cart: &str, method: &str) -> DispatchResult {
 }
 
 /// Built-in dispatch table for cartridges whose semantics live in the
-/// daemon binary (rather than as external processes). For v0.01 this is
-/// only `roclaw` — see the `roclaw_handler` module.
+/// daemon binary. v0.01 had only `roclaw` and `sim_world`; v0.1 adds real
+/// handlers for `cooking`, `residential_electrical`, and `demo` (see
+/// [`crate::handlers`]). The previous v0.01 stub is gone — every shipped
+/// cartridge now has a real body.
 fn builtin_handler(cart: &Cartridge, method: &str, args: &Value) -> Option<DispatchResult> {
     match cart.name() {
         "roclaw" => Some(roclaw_handler::dispatch(method, args)),
         "sim_world" => Some(sim_world_handler::dispatch(method, args)),
+        "demo" => Some(crate::handlers::demo::dispatch(method, args)),
+        "cooking" => Some(crate::handlers::cooking::dispatch(method, args)),
+        "residential_electrical" => {
+            Some(crate::handlers::residential_electrical::dispatch(method, args))
+        }
         _ => None,
     }
 }

@@ -46,6 +46,10 @@ pub struct DaemonConfig {
     pub temperature: f64,
     /// Cap on tokens per sub-request before forcing a checkpoint.
     pub max_predict_per_segment: u32,
+    /// Optional path. If set, every task appends one JSONL line with the
+    /// trace shape documented in `docs/fine-tune-recipe.md` §1. Used to
+    /// build the v0.1 fine-tune dataset.
+    pub trace_path: Option<String>,
 }
 
 impl Default for DaemonConfig {
@@ -58,6 +62,7 @@ impl Default for DaemonConfig {
             max_loop_depth: 4,
             temperature: 0.2,
             max_predict_per_segment: 512,
+            trace_path: None,
         }
     }
 }
@@ -127,20 +132,24 @@ impl Daemon {
         }];
         let mut steps: u32 = 0;
         let started = std::time::Instant::now();
+        let mut raw_stream = String::new();
+        let mut cartridges_used: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
 
-        loop {
+        let outcome = loop {
             if started.elapsed() > self.cfg.task_budget {
                 log::warn!("task budget exceeded; forcing halt");
-                return Ok(TaskOutcome {
+                break TaskOutcome {
                     status: HaltStatus::Partial,
                     steps,
-                    final_prompt: prompt,
-                });
+                    final_prompt: prompt.clone(),
+                };
             }
 
             let segment = self.complete_one_segment(&prompt)?;
             log::debug!("segment ({} bytes): {:?}", segment.len(), trim_for_log(&segment));
             prompt.push_str(&segment);
+            raw_stream.push_str(&segment);
             stream.feed(&segment);
 
             // Drain all complete statements emitted by this segment.
@@ -151,23 +160,34 @@ impl Daemon {
                     Ok(s) => s,
                     Err(e) => {
                         log::error!("parse error: {e}");
-                        return Ok(TaskOutcome {
+                        break TaskOutcome {
                             status: HaltStatus::Failure,
                             steps,
-                            final_prompt: prompt,
-                        });
+                            final_prompt: prompt.clone(),
+                        };
                     }
                 };
                 steps += 1;
                 log::info!("step {steps}: {stmt:?}");
+                if let Statement::Call { cart, .. } = &stmt {
+                    cartridges_used.insert(cart.clone());
+                }
 
                 match self.handle_statement(&stmt, &mut prompt, &mut local_context)? {
                     StatementOutcome::Halt(s) => {
-                        return Ok(TaskOutcome {
+                        let outcome = TaskOutcome {
                             status: s,
                             steps,
-                            final_prompt: prompt,
-                        });
+                            final_prompt: prompt.clone(),
+                        };
+                        return self.write_trace(
+                            user_goal,
+                            &outcome,
+                            &raw_stream,
+                            &cartridges_used,
+                            started.elapsed(),
+                        )
+                        .map(|_| outcome);
                     }
                     StatementOutcome::Continue => {}
                 }
@@ -184,7 +204,54 @@ impl Daemon {
                     );
                 }
             }
-        }
+        };
+
+        // Write trace for budget-exceeded / parse-failure exits too.
+        let _ = self.write_trace(
+            user_goal,
+            &outcome,
+            &raw_stream,
+            &cartridges_used,
+            started.elapsed(),
+        );
+        Ok(outcome)
+    }
+
+    fn write_trace(
+        &self,
+        goal: &str,
+        outcome: &TaskOutcome,
+        raw_stream: &str,
+        cartridges: &std::collections::BTreeSet<String>,
+        wall: Duration,
+    ) -> Result<()> {
+        let path = match &self.cfg.trace_path {
+            Some(p) => p.clone(),
+            None => return Ok(()),
+        };
+        let entry = json!({
+            "goal":          goal,
+            "prompt":        outcome.final_prompt,
+            "stream":        raw_stream,
+            "status":        outcome.status.to_string(),
+            "steps":         outcome.steps,
+            "wall_seconds":  wall.as_secs_f64(),
+            "cartridges":    cartridges.iter().collect::<Vec<_>>(),
+            "ts":            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        });
+        let line = serde_json::to_string(&entry)? + "\n";
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("opening trace file {path}"))?;
+        f.write_all(line.as_bytes()).context("writing trace line")?;
+        log::debug!("trace appended to {path}");
+        Ok(())
     }
 
     fn handle_statement(
@@ -213,13 +280,7 @@ impl Daemon {
                 inject_ack(prompt);
             }
             Statement::Call { cart, method, args } => {
-                let result = match dispatch_call(&self.registry, cart, method, args) {
-                    Ok(v) => v,
-                    Err(DispatchError::SchemaViolation { errors, .. }) => {
-                        json!({"ok": false, "error": "schema_violation", "details": errors})
-                    }
-                    Err(e) => json!({"ok": false, "error": format!("{e}")}),
-                };
+                let result = self.handle_call(cart, method, args, local_context);
                 local_context.push(CloudMessage {
                     role: "assistant".into(),
                     content: format!("call {cart}.{method} → {result}"),
@@ -271,6 +332,77 @@ impl Daemon {
             }
         }
         Ok(StatementOutcome::Continue)
+    }
+
+    /// Dispatch a `<|call|>cart.method` — v0.1 wires the **proactive
+    /// tier-based cloud route** (refinement §2.5). Order:
+    ///
+    /// 1. If the cartridge's manifest sets `preferred_tier: "cloud"`,
+    ///    proxy the call to the cloud model via [`crate::cloud`]. The
+    ///    cloud returns a JSON value; we inject it as the result.
+    /// 2. Else dispatch to the local handler. On any error, surface as a
+    ///    `{"ok":false,...}` JSON for the model to decide whether to
+    ///    retry (refinement §1.2 — single retry per step at the daemon
+    ///    level, then `<|fault|>` if persistent).
+    fn handle_call(
+        &self,
+        cart: &str,
+        method: &str,
+        args: &Value,
+        local_context: &[CloudMessage],
+    ) -> Value {
+        // Look up tier without holding the cartridge ref into the cloud branch.
+        let tier = self
+            .registry
+            .get(cart)
+            .map(|c| c.manifest.preferred_tier.clone())
+            .unwrap_or_else(|| "auto".into());
+
+        if tier == "cloud" && self.cloud.key.is_some() {
+            log::info!("call {cart}.{method}: routing to cloud (preferred_tier=cloud)");
+            return self.proxy_call_to_cloud(cart, method, args, local_context);
+        }
+
+        match dispatch_call(&self.registry, cart, method, args) {
+            Ok(v) => v,
+            Err(DispatchError::SchemaViolation { errors, .. }) => {
+                json!({"ok": false, "error": "schema_violation", "details": errors})
+            }
+            Err(e) => json!({"ok": false, "error": format!("{e}")}),
+        }
+    }
+
+    fn proxy_call_to_cloud(
+        &self,
+        cart: &str,
+        method: &str,
+        args: &Value,
+        local_context: &[CloudMessage],
+    ) -> Value {
+        let payload = json!({
+            "intent": "execute_cartridge_method",
+            "cartridge": cart,
+            "method": method,
+            "args": args,
+        });
+        match crate::cloud::forward_fault(&self.cloud, local_context, &payload) {
+            Ok(reply) => {
+                // Cloud may return a raw JSON value or a code-fenced block.
+                // Try direct parse first; fall back to extracting JSON from
+                // text via the tool_parser helper.
+                if let Ok(v) = serde_json::from_str::<Value>(&reply) {
+                    v
+                } else {
+                    let extracted = crate::tool_parser::extract_json_object(&reply);
+                    serde_json::from_str(&extracted).unwrap_or(json!({
+                        "ok": false,
+                        "error": "cloud returned non-JSON",
+                        "raw": reply,
+                    }))
+                }
+            }
+            Err(e) => json!({"ok": false, "error": format!("cloud routing failed: {e}")}),
+        }
     }
 
     fn handle_fault(
