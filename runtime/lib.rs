@@ -16,6 +16,7 @@ pub mod dialect;
 pub mod dispatch;
 pub mod handlers;
 pub mod iod;
+pub mod mock_server;
 pub mod multitask;
 pub mod parser;
 pub mod roclaw;
