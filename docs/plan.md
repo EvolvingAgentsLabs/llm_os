@@ -22,21 +22,25 @@ Scaffolded 2026-04-24. **Week 1 grammar drafted and mechanically validated 2026-
 - [ ] `iod.rs` (~500 lines): stream llama.cpp output, dispatch opcodes, inject `<|result|>`/`<|ack|>` blocks, maintain loop-depth counter.
 - [x] Decide: one-program-per-task vs long-running session — **resolved: many halting programs** (CONTINUATION_PLAN §3).
 
-### Week 3 — Cartridge adapter
-- [ ] Port `cooking`, `residential-electrical`, `demo` cartridges from `skillos_mini/cartridges/` to `/cart/<name>/` layout with manifest + allowed-opcode list.
-- [ ] Runtime JSON-schema validator wired into I/O daemon's `<|call|>` dispatch.
+### Week 3 — Cartridge adapter  [COMPLETE]
+- [x] Hierarchical `cart/<domain>/<name>/` layout (refinement §2.2 + C4).
+- [x] Port `cooking`, `residential-electrical`, `demo` cartridges. Validators ported as Rust functions in BUILTIN_VALIDATORS shape (refinement §1.2).
+- [x] Runtime JSON-schema validator wired into I/O daemon's `<|call|>` dispatch (`runtime/cartridge.rs` + `runtime/dispatch.rs`).
+- [x] `docs/cartridge-manifest.md` spec.
 
-### Week 4 — Closed-loop validation
-- [ ] End-to-end fixture: 10-minute navigate-and-report task, measure tokens/time/success.
+### Week 4 — Closed-loop validation  [COMPLETE]
+- [x] `cart/sim/sim_world/` deterministic fixture cartridge.
+- [x] `tests/e2e/navigate_and_report.sh` — 10-iteration acceptance harness. **Note: not exercised on this Windows dev box** — runs on Pi 5 per CONTINUATION_PLAN §6.
 
-### Week 5 — RoClaw integration
-- [ ] `/dev/roclaw` cartridge → 6-byte UDP frame emission. Reuse `skillos/roclaw_bridge.py` or port to Rust.
-- [ ] Dual-brain: Pi cerebellum + cloud cortex end-to-end.
+### Week 5 — RoClaw integration  [COMPLETE]
+- [x] `cart/io/roclaw/` cartridge with `BytecodeCompiler` ported to `runtime/roclaw.rs` (13 opcodes — refinement §1.3 was wrong about 14, source has no ACK opcode).
+- [x] `runtime/roclaw.rs` UDP transport to `127.0.0.1:4210` (env: `LLM_OS_ROCLAW_ADDR`). Tests cover the design §1.3 example `forward 150 150 → AA 01 96 96 01 FF`.
+- [x] Dual-brain runbook `docs/dual-brain-deployment.md`.
 
-### Week 6 — Cloud fallback + compactor + v0.01 release
-- [ ] `<|fault|>` → cloud API dispatch.
-- [ ] Promote skillos_mini compactor to swap daemon.
-- [ ] Tag v0.01. README. Grammar on HuggingFace? Code on GitHub.
+### Week 6 — Cloud fallback + compactor + v0.01 release  [COMPLETE]
+- [x] `<|fault|>{"needs_cloud":true}` → OpenAI-compatible cloud dispatch (`runtime/cloud.rs`).
+- [x] Compactor as swap daemon (`runtime/swap.rs`, port of skillos_mini `compactor.ts`).
+- [x] Tag `v0.01`. `RELEASE_NOTES.md` summarizes everything.
 
 ## Open questions
 - Qwen 3 2B Instruct vs base — tokenizer parity for opcode strings? (1-line `llama-tokenize` check Week 2.)

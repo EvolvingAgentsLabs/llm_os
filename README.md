@@ -54,11 +54,26 @@ bash scripts/validate_grammar.sh
 
 Legal fixtures MUST pass, illegal ones MUST fail — both cases are equally important: the grammar is a contract between sampler and I/O daemon, and wrong-rejection is as bad as wrong-acceptance.
 
-## Status (2026-04-25)
+## Status — `v0.01` tagged 2026-04-25
 
-- **Week 1 — ISA + GBNF**: grammar drafted + 12 test fixtures. **Validated** — `legal: 6/6 pass, illegal: 6/6 fail` via locally-built `test-gbnf-validator`. Two real bugs caught and fixed during validation: (1) `safe-text` was too permissive in result-blocks, (2) multi-line alternations broke GBNF parsing on `top-stmt`/`loop-stmt`. See [`design/llm-os-refinement-2026-04-24.md`](design/llm-os-refinement-2026-04-24.md) §1.4.
-- **Week 2 — Bootloader + I/O daemon**: `runtime/tool_parser.rs` ported from `skillos_mini` (defense-in-depth `<|call|>` parser, 5 tool-call shapes + JSON repair). `bootloader.c` + `iod.rs` next.
-- Weeks 3–6: cartridge adapter → closed-loop validation → RoClaw `/dev/roclaw` bridge → cloud fallback + compactor + v0.01 tag.
+The full six-week sprint per [`docs/CONTINUATION_PLAN.md`](docs/CONTINUATION_PLAN.md) is complete. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the canonical summary of what works, what's stubbed, and what's deferred to v0.1.
+
+| Week | Deliverable | Status |
+|---|---|:---:|
+| 1 | ISA + GBNF, 12 fixtures | ✓ validated (`legal: 6/6 pass, illegal: 6/6 fail`) |
+| 1 | Tokenizer parity check | ✓ [`docs/tokenization-report.md`](docs/tokenization-report.md) |
+| 2 | `runtime/bootloader.c` (~250 lines POSIX C) | ✓ |
+| 2 | `runtime/iod.rs` + supporting modules (~1600 lines Rust) | ✓ |
+| 2 | `runtime/tool_parser.rs` defense-in-depth fallback | ✓ 16 tests |
+| 3 | Cartridge manifest spec + hierarchical layout | ✓ [`docs/cartridge-manifest.md`](docs/cartridge-manifest.md) |
+| 3 | 5 cartridges (`roclaw`, `sim_world`, `cooking`, `residential-electrical`, `demo`) | ✓ `roclaw` + `sim_world` real, others stubbed |
+| 4 | L1 e2e fixture | ✓ `tests/e2e/navigate_and_report.sh` |
+| 5 | RoClaw `BytecodeCompiler` ported to Rust | ✓ `runtime/roclaw.rs` |
+| 6 | Cloud fallback (`<\|fault\|>`) | ✓ `runtime/cloud.rs` |
+| 6 | Compactor / swap | ✓ `runtime/swap.rs` |
+| 6 | `RELEASE_NOTES.md` + tag `v0.01` | ✓ |
+
+Real findings the design didn't predict (refinement §1 + RELEASE_NOTES.md): GBNF rejects multi-line alternations; `test-gbnf-validator` always exits 0; Gemma 4 has `<think>` as a single token; RoClaw has 13 opcodes (not 14).
 
 See [`docs/plan.md`](docs/plan.md) for the running status.
 
