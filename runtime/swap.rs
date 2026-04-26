@@ -13,11 +13,113 @@
 //! Hardcoded model→window catalog mirrors the TS `MODEL_CONTEXT_WINDOWS`.
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
 pub const DEFAULT_RATIO: f64 = 0.7;
 pub const MIN_THRESHOLD: usize = 8_000;
+
+// ─── ISA state tracking for compaction safety (§2 NEXT_STEPS) ────────────
+
+/// Extracted ISA state from the token history before compaction. The compactor
+/// walks the dropped window and captures this; it's then serialized as a
+/// `<|state|>{...}<|/state|>` preamble prepended to the summary so the GBNF
+/// state machine can resume coherently.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IsaState {
+    pub loop_depth: u32,
+    /// File descriptors with pending `<|result|>` (from unmatched read/call/wait/fault/policy).
+    pub pending_results: Vec<String>,
+    /// Unmatched `<|write|>` awaiting `<|ack|>`.
+    pub pending_acks: Vec<String>,
+    /// `<|fork|>` with no terminating `<|halt|>`.
+    pub open_forks: Vec<String>,
+    /// Active `<|loop|>` goals (innermost last).
+    pub open_loops: Vec<String>,
+}
+
+impl IsaState {
+    /// Returns true if there is any ISA state that must survive compaction.
+    pub fn is_nontrivial(&self) -> bool {
+        self.loop_depth > 0
+            || !self.pending_results.is_empty()
+            || !self.pending_acks.is_empty()
+            || !self.open_forks.is_empty()
+            || !self.open_loops.is_empty()
+    }
+
+    /// Serialize as the `<|state|>{...}<|/state|>` preamble string.
+    pub fn to_preamble(&self) -> String {
+        let payload = json!({
+            "loop_depth": self.loop_depth,
+            "pending_results": self.pending_results,
+            "pending_acks": self.pending_acks,
+            "open_forks": self.open_forks,
+            "open_loops": self.open_loops,
+        });
+        format!("<|state|>{}<|/state|>\n", payload)
+    }
+}
+
+/// Walk a sequence of message contents and extract the ISA state at the
+/// boundary. Scans for opcode tokens and tracks nesting/pending state.
+pub fn extract_isa_state(messages: &[ChatMessage]) -> IsaState {
+    let mut state = IsaState::default();
+    for msg in messages {
+        for line in msg.content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("<|loop|>goal=") {
+                state.loop_depth += 1;
+                if let Some(goal) = trimmed.strip_prefix("<|loop|>goal=") {
+                    state.open_loops.push(goal.trim().to_string());
+                }
+            } else if trimmed == "<|break|>" {
+                state.loop_depth = state.loop_depth.saturating_sub(1);
+                state.open_loops.pop();
+            } else if trimmed.starts_with("<|fork|>goal=") {
+                if let Some(goal) = trimmed.strip_prefix("<|fork|>goal=") {
+                    state.open_forks.push(goal.trim().to_string());
+                }
+            } else if trimmed.starts_with("<|read|>") {
+                // Pending until <|result|> arrives
+                if let Some(fd) = extract_fd(trimmed, "<|read|>") {
+                    state.pending_results.push(fd);
+                }
+            } else if trimmed.starts_with("<|call|>") {
+                state.pending_results.push("call".to_string());
+            } else if trimmed.starts_with("<|wait|>") {
+                if let Some(fd) = extract_fd(trimmed, "<|wait|>") {
+                    state.pending_results.push(fd);
+                }
+            } else if trimmed.starts_with("<|fault|>") {
+                state.pending_results.push("fault".to_string());
+            } else if trimmed == "<|policy|>" {
+                state.pending_results.push("policy".to_string());
+            } else if trimmed.starts_with("<|write|>") {
+                if let Some(fd) = extract_fd(trimmed, "<|write|>") {
+                    state.pending_acks.push(fd);
+                }
+            } else if trimmed.starts_with("<|result|>") || trimmed.starts_with("<|/result|>") {
+                // Result received — clear one pending
+                state.pending_results.pop();
+            } else if trimmed.starts_with("<|ack|>") {
+                state.pending_acks.pop();
+            } else if trimmed.starts_with("<|halt|>") {
+                // Halt clears fork context (one fork completed)
+                state.open_forks.pop();
+            }
+        }
+    }
+    state
+}
+
+fn extract_fd(line: &str, prefix: &str) -> Option<String> {
+    let rest = line.strip_prefix(prefix)?;
+    let rest = rest.strip_prefix("fd=")?;
+    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    Some(format!("fd{}", &rest[..end]))
+}
 
 /// Per-model effective context window (tokens). Mirrors the catalog in
 /// `compactor.ts:17-33`. RULER-corrected — uses *effective* window where
@@ -94,31 +196,52 @@ pub struct CompactResult {
     pub messages: Vec<ChatMessage>,
     pub summary: String,
     pub compacted: usize,
+    /// ISA state extracted from the dropped window, if nontrivial.
+    /// `Some(state)` means a `<|state|>` preamble was injected.
+    pub isa_state: Option<IsaState>,
 }
 
-/// Synchronous textual compaction (FIFO mode equivalent — same as
-/// `compactMessages` in TS). Drops the oldest messages, replaces them with
-/// a synthesized "Session continues" preamble carrying a short bullet
-/// summary.
+/// ISA-aware synchronous textual compaction (§2 NEXT_STEPS). Drops the
+/// oldest messages but first extracts ISA state from the dropped window.
+/// If state is nontrivial (open loops, pending results, etc.), prepends a
+/// `<|state|>{...}<|/state|>` preamble so the GBNF state machine can
+/// resume coherently after compaction.
 pub fn compact(messages: &[ChatMessage], cfg: &CompactionConfig) -> CompactResult {
     if !should_compact(messages, cfg) {
         return CompactResult {
             messages: messages.to_vec(),
             summary: String::new(),
             compacted: 0,
+            isa_state: None,
         };
     }
     let keep_from = messages.len().saturating_sub(cfg.preserve_recent);
     let removed = &messages[..keep_from];
     let preserved = &messages[keep_from..];
+
+    // §2: Extract ISA state from the window being dropped.
+    let isa_state = extract_isa_state(removed);
     let summary = summarize_textual(removed);
-    let mut out = Vec::with_capacity(preserved.len() + 1);
+
+    let mut out = Vec::with_capacity(preserved.len() + 2);
+
+    // If ISA state is nontrivial, inject the state preamble BEFORE the
+    // summary so the parser rehydrates loop depth before seeing new opcodes.
+    if isa_state.is_nontrivial() {
+        out.push(ChatMessage {
+            role: "system".into(),
+            content: isa_state.to_preamble(),
+        });
+    }
+
     out.push(summary_message(&summary));
     out.extend_from_slice(preserved);
+
     CompactResult {
         messages: out,
         summary,
         compacted: removed.len(),
+        isa_state: if isa_state.is_nontrivial() { Some(isa_state) } else { None },
     }
 }
 
@@ -179,6 +302,7 @@ mod tests {
         let r = compact(&m, &cfg);
         assert_eq!(r.compacted, 0);
         assert_eq!(r.messages.len(), 2);
+        assert!(r.isa_state.is_none());
     }
 
     #[test]
@@ -197,11 +321,55 @@ mod tests {
         ];
         let r = compact(&m, &cfg);
         assert_eq!(r.compacted, 3);
-        // 1 summary + 2 preserved.
+        // 1 summary + 2 preserved (no ISA state in plain text).
         assert_eq!(r.messages.len(), 3);
         assert!(r.messages[0].content.contains("Prior context"));
         assert_eq!(r.messages[1].content, "recent1");
         assert_eq!(r.messages[2].content, "recent2");
+        assert!(r.isa_state.is_none());
+    }
+
+    #[test]
+    fn isa_aware_compaction_injects_state_preamble() {
+        let cfg = CompactionConfig {
+            preserve_recent: 1,
+            max_estimated_tokens: 1,
+            llm_summary_min_messages: 4,
+        };
+        let m = vec![
+            msg("assistant", "<|loop|>goal=navigate\n<|call|>roclaw.forward {\"speed\":100} <|/call|>"),
+            msg("user", "<|result|>{\"ok\":true}<|/result|>"),
+            msg("assistant", "still running"),
+        ];
+        let r = compact(&m, &cfg);
+        assert!(r.isa_state.is_some());
+        let state = r.isa_state.unwrap();
+        assert_eq!(state.loop_depth, 1);
+        assert_eq!(state.open_loops, vec!["navigate"]);
+        // First message should be the state preamble
+        assert!(r.messages[0].content.contains("<|state|>"));
+        assert!(r.messages[0].content.contains("loop_depth"));
+    }
+
+    #[test]
+    fn extract_isa_state_tracks_nested_loops() {
+        let msgs = vec![
+            msg("assistant", "<|loop|>goal=outer\n<|loop|>goal=inner"),
+        ];
+        let state = extract_isa_state(&msgs);
+        assert_eq!(state.loop_depth, 2);
+        assert_eq!(state.open_loops, vec!["outer", "inner"]);
+        assert!(state.is_nontrivial());
+    }
+
+    #[test]
+    fn extract_isa_state_trivial_when_balanced() {
+        let msgs = vec![
+            msg("assistant", "<|loop|>goal=x\n<|break|>\n<|halt|>status=success"),
+        ];
+        let state = extract_isa_state(&msgs);
+        assert_eq!(state.loop_depth, 0);
+        assert!(!state.is_nontrivial());
     }
 
     #[test]

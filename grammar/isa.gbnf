@@ -1,4 +1,4 @@
-# LLM-OS v0.01 ISA Grammar
+# LLM-OS v0.5 ISA Grammar
 # Target tokenizer: Qwen 3 2B (bootstrap — opcodes are string patterns,
 # tokenized as multi-token sequences). Kernel-native single-token version
 # is produced after Month 2 fine-tune; see isa-spec.md §5.
@@ -9,6 +9,9 @@
 #   I3. <|break|> legal only inside loop-body.
 #   I4. Syscall result-blocks follow read/call/wait/fault/policy.
 #   I5. <|write|> is acknowledged by <|ack|>.
+#   I6. <|state|> is daemon-injected after KV compaction to rehydrate ISA
+#       state (loop depth, pending results, open forks). Informational —
+#       no transition, no daemon response needed.
 
 root ::= program
 
@@ -16,10 +19,10 @@ program ::= top-stmt* halt-stmt
 
 # --- statements legal at loop depth 0 (no <|break|>, <|halt|> allowed) ---
 # NOTE: GBNF requires alternations on a single line OR inside parens.
-top-stmt  ::= read-stmt | write-stmt | call-stmt | yield-stmt | fork-stmt | wait-stmt | loop-block | think-block | commit-stmt | fault-stmt | policy-stmt
+top-stmt  ::= read-stmt | write-stmt | call-stmt | yield-stmt | fork-stmt | wait-stmt | loop-block | think-block | commit-stmt | fault-stmt | policy-stmt | state-stmt
 
 # --- statements legal inside a loop (adds <|break|>, forbids <|halt|>) ---
-loop-stmt ::= read-stmt | write-stmt | call-stmt | yield-stmt | fork-stmt | wait-stmt | loop-block | think-block | commit-stmt | fault-stmt | policy-stmt | break-stmt
+loop-stmt ::= read-stmt | write-stmt | call-stmt | yield-stmt | fork-stmt | wait-stmt | loop-block | think-block | commit-stmt | fault-stmt | policy-stmt | break-stmt | state-stmt
 
 # --- opcodes ---
 
@@ -37,6 +40,9 @@ fault-stmt   ::= "<|fault|>" json nl result-block
 policy-stmt  ::= "<|policy|>" nl result-block
 
 loop-block   ::= "<|loop|>goal=" label nl loop-stmt* break-stmt
+
+# --- 14th opcode: daemon-injected state recovery after KV compaction ---
+state-stmt   ::= "<|state|>" json "<|/state|>" nl
 
 # --- daemon-injected blocks; part of grammar so re-prefill validates ---
 # Result content is always a JSON value (use a JSON string for plain text).

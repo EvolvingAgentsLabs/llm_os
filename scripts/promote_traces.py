@@ -36,6 +36,7 @@ import glob
 import hashlib
 import itertools
 import json
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -56,7 +57,72 @@ def parse_args() -> argparse.Namespace:
                    help="cap pairs per goal to keep dataset balanced")
     p.add_argument("--dry-run", action="store_true",
                    help="report counts; write nothing")
+    # Cross-project trace support: load YAML-frontmatter markdown traces
+    # from skillos/RoClaw in addition to JSONL.
+    p.add_argument("--markdown-traces", nargs="*", default=[],
+                   help="markdown trace files with YAML frontmatter (globs ok)")
     return p.parse_args()
+
+
+# ─── YAML-frontmatter markdown trace parser ───────────────────────────
+
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+
+
+def _parse_yaml_frontmatter(text: str) -> dict | None:
+    """Extract YAML frontmatter from a markdown trace file.
+    Returns None if no frontmatter found. Uses regex + simple key:value
+    parsing to avoid a pyyaml dependency."""
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        return None
+    meta: dict = {}
+    for line in m.group(1).splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        colon = line.find(":")
+        if colon < 0:
+            continue
+        key = line[:colon].strip()
+        val = line[colon + 1:].strip().strip('"').strip("'")
+        # Handle simple lists: [a, b, c]
+        if val.startswith("[") and val.endswith("]"):
+            val = [v.strip().strip('"').strip("'") for v in val[1:-1].split(",") if v.strip()]
+        meta[key] = val
+    return meta
+
+
+def _md_trace_to_jsonl(path: Path) -> dict | None:
+    """Convert a YAML-frontmatter markdown trace to the JSONL schema
+    expected by the DPO pipeline. Maps: goal→goal, outcome→status,
+    source→cartridges, body→stream."""
+    text = path.read_text(encoding="utf-8")
+    meta = _parse_yaml_frontmatter(text)
+    if not meta:
+        return None
+    # Extract body (everything after frontmatter)
+    body_match = _FRONTMATTER_RE.search(text)
+    body = text[body_match.end():] if body_match else text
+    goal = meta.get("goal", "")
+    if isinstance(goal, list):
+        goal = " ".join(goal)
+    outcome = meta.get("outcome", "failure")
+    status = "success" if outcome == "success" else "failure"
+    source = meta.get("source", "unknown")
+    cartridges = [source] if isinstance(source, str) else source
+    return {
+        "goal": goal,
+        "stream": body.strip(),
+        "status": status,
+        "steps": 0,
+        "wall_seconds": 0.0,
+        "cartridges": cartridges,
+        "prompt": f"Goal: {goal}\n",
+        "ts": 0,
+        "_source_file": str(path),
+        "_trace_format": "markdown",
+    }
 
 
 def load_traces(patterns: list[str]) -> list[dict]:
@@ -81,6 +147,22 @@ def load_traces(patterns: list[str]) -> list[dict]:
     return out
 
 
+def load_markdown_traces(patterns: list[str]) -> list[dict]:
+    """Load YAML-frontmatter markdown traces from skillos/RoClaw."""
+    paths: list[Path] = []
+    for pat in patterns:
+        for match in glob.glob(pat):
+            paths.append(Path(match))
+    out: list[dict] = []
+    for p in paths:
+        trace = _md_trace_to_jsonl(p)
+        if trace:
+            out.append(trace)
+        else:
+            print(f"warn: {p}: no YAML frontmatter; skipping", file=sys.stderr)
+    return out
+
+
 def passes_cartridge_filter(trace: dict, required: set[str]) -> bool:
     if not required:
         return True
@@ -97,7 +179,13 @@ def main() -> int:
     required_carts = {c.strip() for c in args.require_cartridges.split(",") if c.strip()}
 
     traces = load_traces(args.traces)
-    print(f"[promote_traces] loaded {len(traces)} traces", file=sys.stderr)
+    print(f"[promote_traces] loaded {len(traces)} JSONL traces", file=sys.stderr)
+
+    # Cross-project: load markdown traces from skillos/RoClaw.
+    if args.markdown_traces:
+        md_traces = load_markdown_traces(args.markdown_traces)
+        print(f"[promote_traces] loaded {len(md_traces)} markdown traces", file=sys.stderr)
+        traces.extend(md_traces)
 
     # Filter by cartridge requirement.
     traces = [t for t in traces if passes_cartridge_filter(t, required_carts)]

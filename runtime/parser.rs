@@ -28,6 +28,10 @@ pub enum Opcode {
     Commit,
     Fault,
     Policy,
+    /// 14th opcode — daemon-injected after KV compaction to rehydrate ISA
+    /// state (loop depth, pending results, open forks). Informational only:
+    /// no transition, no daemon response needed.
+    State,
 }
 
 impl Opcode {
@@ -45,6 +49,12 @@ impl Opcode {
                 | Opcode::Fault
                 | Opcode::Policy
         )
+    }
+
+    /// Returns true if this opcode was injected by the daemon (not emitted
+    /// by the LLM). State is daemon-injected after KV compaction.
+    pub fn is_daemon_injected(self) -> bool {
+        matches!(self, Opcode::State)
     }
 }
 
@@ -64,6 +74,7 @@ impl fmt::Display for Opcode {
             Opcode::Commit => "commit",
             Opcode::Fault => "fault",
             Opcode::Policy => "policy",
+            Opcode::State => "state",
         };
         write!(f, "{s}")
     }
@@ -85,6 +96,9 @@ pub enum Statement {
     Commit { payload: Value },
     Fault { payload: Value },
     Policy,
+    /// Daemon-injected ISA state preamble after KV compaction.
+    /// Payload: `{"loop_depth":N, "pending_results":["fdN"], "open_forks":[], "open_loops":["goal"]}`
+    State { payload: Value },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +178,10 @@ pub fn parse_statement(line: &str) -> Result<Statement, ParseError> {
     }
     if line == "<|policy|>" {
         return Ok(Statement::Policy);
+    }
+    // <|state|>{...}<|/state|> — daemon-injected ISA state after compaction.
+    if let Some(rest) = strip_prefix(line, "<|state|>") {
+        return parse_state(rest);
     }
 
     Err(ParseError::Malformed(line.to_string()))
@@ -269,6 +287,18 @@ fn parse_halt(rest: &str) -> Result<Statement, ParseError> {
         other => return Err(ParseError::HaltStatus(other.to_string())),
     };
     Ok(Statement::Halt { status })
+}
+
+// `<|state|>{...}<|/state|>` — strip close tag, parse JSON.
+fn parse_state(rest: &str) -> Result<Statement, ParseError> {
+    let body = rest
+        .trim_end()
+        .strip_suffix("<|/state|>")
+        .ok_or_else(|| ParseError::Malformed(format!("state missing <|/state|>: {rest}")))?
+        .trim();
+    Ok(Statement::State {
+        payload: serde_json::from_str(body)?,
+    })
 }
 
 // `key1=v1 key2=v2`
@@ -380,6 +410,14 @@ impl OpcodeStream {
                     Statement::LoopOpen { .. } => self.loop_depth += 1,
                     Statement::Break => {
                         self.loop_depth = self.loop_depth.saturating_sub(1);
+                    }
+                    // Rehydrate ISA state from daemon-injected <|state|> preamble
+                    // after KV compaction. This restores loop depth so the grammar
+                    // state machine stays coherent across compaction boundaries.
+                    Statement::State { payload } => {
+                        if let Some(depth) = payload.get("loop_depth").and_then(|v| v.as_u64()) {
+                            self.loop_depth = depth as u32;
+                        }
                     }
                     _ => {}
                 }
@@ -530,5 +568,38 @@ mod tests {
         assert!(!Opcode::Yield.needs_response());
         assert!(!Opcode::Halt.needs_response());
         assert!(!Opcode::Loop.needs_response());
+        assert!(!Opcode::State.needs_response());
+        assert!(Opcode::State.is_daemon_injected());
+    }
+
+    #[test]
+    fn parses_state() {
+        let s = parse_statement(
+            r#"<|state|>{"loop_depth":2,"pending_results":["fd3"],"open_forks":[]}<|/state|>"#,
+        )
+        .unwrap();
+        match s {
+            Statement::State { payload } => {
+                assert_eq!(payload["loop_depth"], 2);
+                assert_eq!(payload["pending_results"][0], "fd3");
+            }
+            other => panic!("expected State, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn stream_rehydrates_loop_depth_from_state() {
+        let mut st = OpcodeStream::new();
+        assert_eq!(st.loop_depth(), 0);
+        // Simulate compaction: daemon injects state preamble with loop_depth=3
+        st.feed(r#"<|state|>{"loop_depth":3,"pending_results":[],"open_forks":[]}<|/state|>"#);
+        st.feed("\n");
+        let s = st.next_statement().unwrap().unwrap();
+        assert!(matches!(s, Statement::State { .. }));
+        assert_eq!(st.loop_depth(), 3);
+        // Now a break should decrement from 3
+        st.feed("<|break|>\n");
+        st.next_statement();
+        assert_eq!(st.loop_depth(), 2);
     }
 }

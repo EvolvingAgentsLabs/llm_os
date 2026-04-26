@@ -1,11 +1,11 @@
-//! LLM-OS v0.01 runtime library.
+//! LLM-OS v0.5 runtime library.
 //!
 //! Modules:
 //! - [`tool_parser`] — fallback `<|call|>` arg parser (defense in depth).
 //! - [`cartridge`] — cartridge manifest types, registry, JSON-schema validation.
-//! - [`parser`] — streaming ISA opcode parser / state machine.
+//! - [`parser`] — streaming ISA opcode parser / state machine (14 opcodes incl. `<|state|>`).
 //! - [`dispatch`] — opcode → cartridge syscall routing.
-//! - [`swap`] — context compactor (port of skillos_mini compactor.ts).
+//! - [`swap`] — ISA-aware context compactor with state recovery (§2 NEXT_STEPS).
 //! - [`cloud`] — cloud-fallback HTTP adapter for `<|fault|>{"needs_cloud":true}`.
 //! - [`iod`] — the I/O daemon main loop (streaming SSE consumer).
 
@@ -28,3 +28,4 @@ pub mod tool_parser;
 
 pub use cartridge::{Cartridge, CartridgeRegistry, Manifest, MethodSpec};
 pub use parser::{Opcode, OpcodeStream, Statement};
+pub use swap::IsaState;
