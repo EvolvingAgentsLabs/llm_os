@@ -1,0 +1,168 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"
+     role="img" aria-label="llm_os stack">
+  <defs>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="1.5" result="g"/>
+      <feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="strongGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="g1"/>
+      <feGaussianBlur stdDeviation="6" result="g2"/>
+      <feMerge>
+        <feMergeNode in="g2"/><feMergeNode in="g1"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <pattern id="scan" x="0" y="0" width="3" height="3" patternUnits="userSpaceOnUse">
+      <rect width="3" height="1" fill="#ffffff" opacity="0.04"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="720" fill="#000000"/>
+  <rect width="1280" height="720" fill="url(#scan)"/>
+
+  <!-- frame -->
+  <text x="40" y="40" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="13" fill="#a1a1aa" filter="url(#glow)">┌─[ KERNEL://stack ]──────────────────────── llm_os v0.5 · ring0..ring3 ──────┐</text>
+  <text x="40" y="700" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="13" fill="#a1a1aa" filter="url(#glow)">└─────── fetch · decode · execute ────── 13 ISA OPCODES · GBNF ENFORCED ────┘</text>
+
+  <!-- ring labels -->
+  <g font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11">
+    <text x="60" y="92" fill="#e4e4e7" font-weight="700">RING</text>
+    <text x="60" y="148" fill="#ffffff" filter="url(#glow)">3</text>
+    <text x="60" y="240" fill="#ffffff" filter="url(#glow)">2</text>
+    <text x="60" y="368" fill="#ffffff" filter="url(#glow)">1</text>
+    <text x="60" y="488" fill="#ffffff" filter="url(#glow)">0</text>
+    <text x="60" y="600" fill="#00d4ff" filter="url(#glow)">HW</text>
+  </g>
+
+  <!-- RING 3 · cartridges -->
+  <g transform="translate(110, 70)">
+    <rect width="1100" height="80" rx="10" fill="#18181b" stroke="#ffffff" stroke-width="1.5" opacity="0.95" filter="url(#glow)"/>
+    <text x="20" y="26" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="13" font-weight="700" fill="#e4e4e7">⌬ ring 3 · cartridges (userland)</text>
+    <text x="20" y="46" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#e4e4e7" opacity="0.85">cart/system/{summarize,demo}  ·  cart/io/roclaw  ·  cart/sim/sim_world  ·  cart/domestic/{cooking,residential-electrical}</text>
+    <text x="20" y="66" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#a1a1aa">▸ each cartridge = manifest.json + schemas/*.schema.json + dialect.gbnf + handler.rs (or .wasm in v1.0)</text>
+  </g>
+
+  <!-- RING 2 · scheduler / iod -->
+  <g transform="translate(110, 170)">
+    <rect width="1100" height="100" rx="10" fill="#18181b" stroke="#ffffff" stroke-width="1.5" filter="url(#glow)"/>
+    <text x="20" y="26" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="13" font-weight="700" fill="#e4e4e7">⌬ ring 2 · iod (I/O daemon) + scheduler + multitask</text>
+    <g transform="translate(20, 40)">
+      <text font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="10" fill="#a1a1aa">runtime/iod.rs · /dispatch endpoint</text>
+      <text x="0" y="20" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#e4e4e7">▸ parser · decode tokens →    &lt;|call|&gt;cart.method &lt;json&gt;</text>
+      <text x="0" y="36" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#e4e4e7">▸ dispatch · validate JSON vs schema · route to handler</text>
+      <text x="0" y="52" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#ffffff">▸ inject · &lt;|result|&gt;{"ok":true,...}&lt;|/result|&gt;  →  re-feed sampler</text>
+    </g>
+    <g transform="translate(720, 40)">
+      <text font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="10" fill="#a1a1aa">scheduler · multitask</text>
+      <text x="0" y="20" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#e4e4e7">▸ &lt;|yield|&gt; → context-switch slot</text>
+      <text x="0" y="36" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#e4e4e7">▸ &lt;|fork|&gt; → branched KV cache</text>
+      <text x="0" y="52" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#e4e4e7">▸ &lt;|wait|&gt; → blocked queue</text>
+    </g>
+  </g>
+
+  <!-- RING 1 · grammar / capability / dialect -->
+  <g transform="translate(110, 290)">
+    <rect width="1100" height="120" rx="10" fill="#18181b" stroke="#ffffff" stroke-width="1.5" filter="url(#glow)"/>
+    <text x="20" y="26" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="13" font-weight="700" fill="#e4e4e7">⌬ ring 1 · grammar (ISA) + capability (logit bias) + dialect (compression)</text>
+
+    <g transform="translate(20, 40)">
+      <text font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="10" fill="#a1a1aa">grammar/isa.gbnf · 13 opcodes</text>
+      <text x="0" y="18" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#e4e4e7">read · write · call · yield · fork</text>
+      <text x="0" y="34" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#e4e4e7">wait · loop · break · halt · think</text>
+      <text x="0" y="50" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#e4e4e7">commit · fault · policy</text>
+      <text x="0" y="68" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="10" fill="#00d4ff">12/12 fixtures green · llama-gbnf-validator</text>
+    </g>
+
+    <g transform="translate(380, 40)">
+      <text font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="10" fill="#a1a1aa">capability · logit bias mask</text>
+      <text x="0" y="18" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#e4e4e7">▸ &lt;|call|&gt;     → allowed cartridges</text>
+      <text x="0" y="34" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#e4e4e7">▸ banned ops    → −∞ logit at sampler</text>
+      <text x="0" y="50" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#e4e4e7">▸ &lt;|policy|&gt;  → mutate mask</text>
+      <text x="0" y="68" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="10" fill="#00d4ff">backed by daemon-side reject (v1.0)</text>
+    </g>
+
+    <g transform="translate(740, 40)">
+      <text font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="10" fill="#a1a1aa">dialect · compression layer</text>
+      <text x="0" y="18" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#e4e4e7">▸ verbose: {"left":150,"right":150}</text>
+      <text x="0" y="34" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#e4e4e7">▸ dialect: F 150 150</text>
+      <text x="0" y="50" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#ffffff">▸ saves ~7× tokens / call</text>
+      <text x="0" y="68" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="10" fill="#00d4ff">8 Hz Pi 5 budget made possible</text>
+    </g>
+  </g>
+
+  <!-- RING 0 · kv cache + compaction (RAM + swap) -->
+  <g transform="translate(110, 430)">
+    <rect width="1100" height="80" rx="10" fill="#18181b" stroke="#ffffff" stroke-width="1.5" filter="url(#glow)"/>
+    <text x="20" y="26" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="13" font-weight="700" fill="#e4e4e7">⌬ ring 0 · KV cache (= RAM) + compaction (= swap)</text>
+
+    <!-- KV bar visualization -->
+    <g transform="translate(20, 36)">
+      <text font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="10" fill="#a1a1aa">kv layout · 8192 ctx</text>
+      <g transform="translate(0, 14)">
+        <!-- system prompt -->
+        <rect width="80" height="20" fill="#ffffff" opacity="0.85"/>
+        <text x="40" y="14" text-anchor="middle" font-size="9" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" fill="#000000">system</text>
+        <!-- grammar / dialect -->
+        <rect x="84" width="50" height="20" fill="#e4e4e7" opacity="0.7"/>
+        <text x="109" y="14" text-anchor="middle" font-size="9" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" fill="#000000">isa</text>
+        <!-- working set -->
+        <rect x="138" width="280" height="20" fill="#a1a1aa" opacity="0.6"/>
+        <text x="278" y="14" text-anchor="middle" font-size="9" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" fill="#000000">working set · 62%</text>
+        <!-- compacted summary -->
+        <rect x="422" width="70" height="20" fill="#52525b" stroke="#00d4ff" stroke-dasharray="3 2" stroke-width="1"/>
+        <text x="457" y="14" text-anchor="middle" font-size="9" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" fill="#e4e4e7">summary</text>
+        <!-- free -->
+        <rect x="496" width="200" height="20" fill="none" stroke="#52525b" stroke-width="1" stroke-dasharray="2 2"/>
+        <text x="596" y="14" text-anchor="middle" font-size="9" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" fill="#52525b">free</text>
+      </g>
+      <text x="0" y="56" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="9" fill="#a1a1aa">compaction triggers @ 70% util · ISA-aware (preserves loop depth + pending result expectations)</text>
+    </g>
+
+    <g transform="translate(820, 50)">
+      <text font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="10" fill="#a1a1aa">paging</text>
+      <text x="0" y="16" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#ffffff" filter="url(#glow)">page in · page out</text>
+      <rect x="0" y="-3" width="14" height="6" fill="#00d4ff" filter="url(#glow)">
+        <animate attributeName="x" values="-20;360;-20" dur="3.2s" repeatCount="indefinite"/>
+      </rect>
+      <line x1="0" y1="0" x2="340" y2="0" stroke="#a1a1aa" stroke-width="1" opacity="0.5"/>
+    </g>
+  </g>
+
+  <!-- HW · llama.cpp + bootloader.c -->
+  <g transform="translate(110, 530)">
+    <rect width="1100" height="80" rx="10" fill="#18181b" stroke="#00d4ff" stroke-width="1.5" filter="url(#glow)"/>
+    <text x="20" y="26" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="13" font-weight="700" fill="#bff7ff">◆ hw · llama.cpp (= CPU) + bootloader.c</text>
+    <text x="20" y="46" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#bff7ff" opacity="0.85">sampler loop = fetch · decode · execute  ·  GBNF = MMU type safety  ·  bias mask = ring transitions</text>
+    <text x="20" y="66" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="11" fill="#bff7ff">▸ pi 5: 8 Hz (4×NEON · qwen-2.5-3b-q4)  ·  cloud A100: 200 Hz (gemini 2.5 flash via http)</text>
+    <circle cx="1060" cy="40" r="6" fill="#00d4ff" filter="url(#strongGlow)">
+      <animate attributeName="opacity" values="0.4;1;0.4" dur="1.6s" repeatCount="indefinite"/>
+    </circle>
+    <text x="1078" y="44" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="10" fill="#bff7ff">8.2 Hz</text>
+  </g>
+
+  <!-- arrows -->
+  <g stroke="#a1a1aa" stroke-width="1" stroke-dasharray="4 3" fill="none" opacity="0.55" filter="url(#glow)">
+    <path d="M 660 152 L 660 168"/>
+    <path d="M 660 270 L 660 290"/>
+    <path d="M 660 410 L 660 430"/>
+    <path d="M 660 510 L 660 530"/>
+  </g>
+  <g fill="#a1a1aa" filter="url(#glow)">
+    <polygon points="657,168 660,160 663,168"/>
+    <polygon points="657,290 660,282 663,290"/>
+    <polygon points="657,430 660,422 663,430"/>
+    <polygon points="657,530 660,522 663,530"/>
+  </g>
+
+  <!-- live LED -->
+  <circle cx="50" cy="690" r="3" fill="#ffffff" filter="url(#strongGlow)">
+    <animate attributeName="opacity" values="0.4;1;0.4" dur="1.4s" repeatCount="indefinite"/>
+  </circle>
+  <text x="62" y="694" font-family="'SF Mono','Menlo','Consolas','Courier New',monospace" font-size="10" fill="#e4e4e7" opacity="0.7">live</text>
+
+  <!-- scan line -->
+  <rect x="0" y="-2" width="1280" height="2" fill="#00d4ff" opacity="0.35" filter="url(#glow)">
+    <animate attributeName="y" values="-4;720;-4" dur="9s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0;0.4;0.4;0" keyTimes="0;0.1;0.9;1" dur="9s" repeatCount="indefinite"/>
+  </rect>
+</svg>
