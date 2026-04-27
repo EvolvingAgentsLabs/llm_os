@@ -295,6 +295,13 @@ bootstrap models with imperfect tokenizers. We trust the daemon-side
 reject as the hard fence; the bias is a soft optimization. See
 [`NEXT_STEPS.md §5`](NEXT_STEPS.md).
 
+**Status (v0.5):** [`capability.rs`](../runtime/capability.rs) is now
+**implemented**. It queries `/tokenize` for opcode token IDs and builds
+a `logit_bias` array banning unauthorized opcodes, preferring unique
+constituent tokens to minimize false positives on bootstrap kernels.
+On fine-tuned kernels (post-v0.1) where each opcode is a single token,
+the bias is exact. The daemon-side reject remains the hard fence.
+
 <p align="center">
   <img src="assets/divider.svg" alt="" width="100%"/>
 </p>
@@ -345,6 +352,15 @@ large knowledge base) escalates without a separate code path. See
 [`runtime/cloud.rs`](../runtime/cloud.rs) and
 [`runtime/subagent.rs`](../runtime/subagent.rs).
 
+**Status (v0.5):** Subagent cartridges are **real**. The `Subagent`
+trait in [`subagent.rs`](../runtime/subagent.rs) defines the
+`LLMProxy`/`CloudProxy` interface. `cart/system/summarize/` is the
+reference subagent — when the LLM emits
+`<|call|>summarize.summarize`, the daemon detects `subagent: true`
+on the manifest and routes through the injected proxy. Cloud creds
+from `LLM_OS_CLOUD_*` env vars. Dynamic WASM-sandboxed subagent
+loading is a v1.0 goal.
+
 <p align="center">
   <img src="assets/divider.svg" alt="" width="100%"/>
 </p>
@@ -373,63 +389,138 @@ The five non-negotiables, encoded in tests:
 
 ```
 runtime/
-├── bootloader.c            ← C bootstrap; mmaps GGUF
+├── bootloader.c            ← C bootstrap; fork llama-server, inject boot prompt
 ├── lib.rs                  ← library root
-├── iod_main.rs             ← daemon entry point
-├── iod.rs                  ← /dispatch /trace /policy endpoints
-├── parser.rs               ← token stream → Op events
-├── dispatch.rs             ← Op::Call → handler
-├── handlers.rs             ← bootstrap in-process handlers (→ WASM in v1.0)
-├── cartridge.rs            ← manifest + schema loading
-├── capability.rs           ← logit bias + policy mask
-├── dialect.rs              ← per-cart dialect compression
-├── scheduler.rs            ← yield / multitask context-switch
-├── multitask.rs            ← fork / wait / branched KV
-├── swap.rs                 ← KV compaction (will be ISA-aware)
-├── subagent.rs             ← cloud delegation
-├── cloud.rs                ← cloud HTTP client
-├── roclaw.rs               ← roclaw cartridge bridge
-├── tool_parser.rs          ← legacy tool-call parser (compat)
-├── schema_to_gbnf.rs       ← compile JSON Schema → per-call GBNF
-├── compile_schemas_main.rs ← build-time schema compilation entry
+├── iod_main.rs             ← daemon entry point (CLI: --server --grammar --trace)
+├── iod.rs                  ← /dispatch /trace /policy + stop-and-inject loop
+├── parser.rs               ← token stream → Op events (14 opcodes incl. <|state|>)
+├── dispatch.rs             ← Op::Call → handler routing + schema validation
+├── handlers.rs             ← real cartridge implementations (cooking, electrical, demo)
+├── cartridge.rs            ← manifest + schema loading + CartridgeRegistry
+├── capability.rs           ← logit bias via /tokenize + daemon-side reject (v0.5)
+├── dialect.rs              ← per-cart dialect compression (3 built-in dialects)
+├── scheduler.rs            ← wall+token budgets, soft/hard preemption (v0.5)
+├── multitask.rs            ← thread-per-task pool via llama-server id_slot (v0.5)
+├── swap.rs                 ← KV compaction at 70% (ISA-aware planned for v1.0)
+├── subagent.rs             ← Subagent trait + LLMProxy + CloudProxy (v0.5)
+├── cloud.rs                ← OpenAI-compatible HTTP client
+├── roclaw.rs               ← roclaw cartridge: args → 6-byte UDP frames
+├── tool_parser.rs          ← fallback call parser (5 shapes + JSON repair)
+├── schema_to_gbnf.rs       ← JSON Schema → GBNF compiler (v0.1)
+├── compile_schemas_main.rs ← build-time schema compilation binary
 ├── mock_server.rs          ← test-only mock llama-server
 └── tests/                  ← rust integration tests
 
 grammar/
-├── isa.gbnf                ← the 13-opcode ISA
-├── isa-spec.md             ← semantics + invariants
+├── isa.gbnf                ← the 13-opcode ISA (GBNF, sampler-enforced)
+├── isa-spec.md             ← semantics + invariants + examples
 └── tests/
-    ├── legal/              ← must parse
-    └── illegal/            ← must NOT parse
+    ├── legal/              ← 6 fixtures that must parse
+    └── illegal/            ← 6 fixtures that must NOT parse
 
 cart/
-├── system/{summarize,demo}/
-├── io/roclaw/
-├── sim/sim_world/
-└── domestic/{cooking,residential-electrical}/
+├── system/{summarize,demo}/          ← summarize is a subagent (v0.5)
+├── io/roclaw/                        ← real handler: 13 motor methods → UDP
+├── sim/sim_world/                    ← real handler: 4×1 grid for e2e tests
+└── domestic/{cooking,residential-electrical}/  ← real handlers (v0.1)
+
+scripts/
+├── quickstart.sh           ← cold checkout → first task (≤10 min on Pi 5)
+├── validate_grammar.sh     ← 12/12 grammar fixture validator
+├── check_tokenizer.sh      ← tokenization parity analysis
+├── rebuild_tokenizer.py    ← add 18 ISA tokens as single tokens
+├── promote_traces.py       ← JSONL traces → DPO triples (self-hosting, v0.5)
+└── dev.sh                  ← development build shortcuts
+
+image/
+├── build.sh                ← Buildroot Pi 5 bootable image
+├── flash.sh                ← flash to SD card
+├── buildroot_defconfig     ← kernel + rootfs config
+└── overlay/                ← runtime + cart + model in rootfs
 ```
 
 <p align="center">
   <img src="assets/divider.svg" alt="" width="100%"/>
 </p>
 
-## ▸ §11 what's not here yet
+## ▸ §11 recent changes (v0.1 → v0.5-rc1)
 
-- **In-llama.cpp grammar swap** — currently 3 HTTP requests per
-  syscall when per-method GBNF activates. v1.0 fix in
-  [`NEXT_STEPS.md §1`](NEXT_STEPS.md).
-- **ISA-aware compactor** — see §5 above.
-- **WASM cartridge sandbox** — handlers run in-process; v1.0 moves to
-  `wasmtime`. See [`NEXT_STEPS.md §4`](NEXT_STEPS.md).
-- **Single-token tokenizer extension** — current bootstrap uses
-  multi-token string patterns. The v1.0 fine-tune will register all
-  18 ISA tokens as strict single tokens. See
-  [`NEXT_STEPS.md §6`](NEXT_STEPS.md).
-- **Three-strikes escalation** — schema-violation loops can burn
-  context. The fix is in [`NEXT_STEPS.md §3`](NEXT_STEPS.md).
+Shipped in `v0.1-rc1` and `v0.5-rc1` (both 2026-04-25):
 
-These are *intentionally* incomplete. The roadmap is in
-[`NEXT_STEPS.md`](NEXT_STEPS.md).
+- **Real cartridge handlers (v0.1).** `cooking`, `residential-electrical`,
+  and `demo` cartridges have real Rust implementations in `handlers.rs`.
+  Cooking emits 7-day menus + shopping lists. Electrical does IEC-60364
+  circuit sizing. Demo does hash + echo.
+- **Per-method GBNF compilation (v0.1).** `schema_to_gbnf.rs` compiles
+  JSON Schema to GBNF sub-grammars. `compile_schemas` binary
+  materializes them on disk. Mid-stream swap deferred to v1.0; v0.5
+  surfaces them in schema-violation error messages.
+- **Dialect framework (v0.1).** `dialect.rs` with 3 built-in dialects:
+  `roclaw-motion-v1`, `roclaw-rotate-v1`, `sim-world-step-v1`.
+  `F 150 150` → `{"left":150,"right":150}` — 2× token compression.
+- **Scheduler (v0.5).** `scheduler.rs` with unified wall + token
+  budgets. Soft preempt at 80% (logged), hard preempt force-injects
+  `<|halt|>status=partial`.
+- **Multi-task (v0.5).** `multitask.rs` spawns N worker threads
+  against one llama-server using `id_slot` for KV-cache isolation.
+  Start server with `--parallel N`.
+- **Capability enforcement (v0.5).** `capability.rs` queries
+  `/tokenize` for opcode token IDs, builds `logit_bias` banning
+  unauthorized opcodes. Prefers unique constituent tokens. See §6.
+- **Subagent cartridges (v0.5).** `subagent.rs` defines the
+  `Subagent` trait. `cart/system/summarize/` is the reference
+  subagent routed through an injected `CloudProxy`. See §8.
+- **Self-hosting trace pipeline (v0.5).** `promote_traces.py`
+  reads JSONL traces, filters successful trajectories, dedupes, emits
+  DPO triples. The *Linux 0.11 moment*: the OS curates its own
+  training data.
+- **Trace collection (v0.1).** `iod --trace <path>` appends one JSONL
+  line per task (goal, prompt, stream, status, step count, carts used).
+- **Fine-tune recipe (v0.1).** `rebuild_tokenizer.py` + detailed
+  recipe in `docs/fine-tune-recipe.md` for DPO with LoRA on the
+  ISA token corpus.
+- **Projection re-baseline (v0.1).** `docs/projection-rebaseline-2026-04-25.md`
+  benchmarked per-syscall token costs and throughput projections.
+
+## ▸ §12 next steps · v1.0 roadmap
+
+Six items stand between v0.5-rc1 and production-ready v1.0.
+Full details in [`NEXT_STEPS.md`](NEXT_STEPS.md).
+
+### priority order
+
+| # | Area | Problem | Fix | Crux |
+|---|------|---------|-----|------|
+| §1 | **Grammar** | 3 HTTP requests per syscall for grammar swap | Multi-grammar stack in llama.cpp sampler | User-facing perf (8 Hz target on Pi 5) |
+| §2 | **Compact** | KV compaction drops unclosed `<\|loop\|>` / pending `<\|result\|>` state | ISA-aware compactor + `<\|state\|>` opcode (14th) | Tightest technical crux — silent state corruption |
+| §3 | **Recover** | Schema violations burn context in retry loops | Three-strikes rule + cloud escalation with violation history | 30s → ≤6s resolution |
+| §4 | **Sandbox** | Cartridge handlers run in-process (no real Ring 3) | WASM via `wasmtime` with curated host function table | Security: real ring boundary |
+| §5 | **Caps** | Logit bias brittle on multi-token bootstrap models | Daemon-side `enforce_runtime` as hard fence, bias downgraded to hint | Belt + suspenders |
+| §6 | **Tokens** | Bootstrap opcodes are 1–5 tokens depending on BPE | Single-token fine-tune: 18 ISA tokens added to tokenizer | Uniform latency + reliable bias |
+
+### the two cruxes
+
+**§1 (grammar swap)** is the user-facing performance crux. The current
+per-method GBNF design requires ~200–400 ms overhead per syscall. A
+patched llama.cpp sampler with a multi-grammar stack eliminates this
+by switching sub-grammars in-process when `<|call|>` is emitted.
+Target: 8 Hz steady across 100 sequential calls on Pi 5.
+
+**§2 (ISA-aware compactor)** is the technical correctness crux. If the
+compactor drops tokens containing an unclosed `<|loop|>` or a pending
+`<|result|>` expectation, the GBNF state machine rejects the next
+emission. The fix: walk the dropped window, extract ISA state
+(loop depth, pending results, fork IDs), prepend a synthetic
+`<|state|>` preamble to the summary so the sampler resumes coherently.
+
+### explicit non-goals (v1.0 scope)
+
+- Multi-process iod federation (v1.5+)
+- Persistent KV across reboots (separate cartridge concern)
+- Distributed cartridges over network (RPC-style, different problem)
+- Custom kernel-mode model from scratch (post-v1.0 research)
+
+Full analysis: [`docs/NEXT_STEPS.md`](NEXT_STEPS.md).
 
 <p align="center">
   <img src="assets/divider.svg" alt="" width="100%"/>
@@ -440,5 +531,5 @@ These are *intentionally* incomplete. The roadmap is in
 </p>
 
 <p align="center">
-  <sub><code>// ARCH.MAP // 13 OPCODES · 5 INVARIANTS · 4 RINGS</code></sub>
+  <sub><code>// ARCH.MAP // 13 OPCODES · 5 INVARIANTS · 4 RINGS · V1.0 ROADMAP</code></sub>
 </p>
