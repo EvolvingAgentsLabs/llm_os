@@ -42,6 +42,8 @@ fn two_tasks_run_concurrently_against_slot_pool() {
         trace_path: None,
         max_tokens_per_task: 100_000,
         slot_id: None,
+        ollama: false,
+        model: String::new(),
     };
 
     let tasks = from_goals(vec!["task A".into(), "task B".into()], cfg);

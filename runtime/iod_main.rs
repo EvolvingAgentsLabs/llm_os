@@ -42,14 +42,30 @@ struct Args {
     /// collection (see docs/fine-tune-recipe.md §1).
     #[arg(long)]
     trace: Option<String>,
+
+    /// Use Ollama's /api/generate instead of llama-server's /v1/completions.
+    /// Default server URL changes to http://127.0.0.1:11434.
+    #[arg(long, default_value = "false")]
+    ollama: bool,
+
+    /// Model name for Ollama backend (e.g. "qwen2.5:1.5b").
+    #[arg(long, default_value = "")]
+    model: String,
 }
 
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
 
+    // Default server URL differs between backends.
+    let server_url = if args.server == "http://127.0.0.1:8080" && args.ollama {
+        "http://127.0.0.1:11434".to_string()
+    } else {
+        args.server
+    };
+
     let cfg = DaemonConfig {
-        server_url: args.server,
+        server_url,
         grammar_path: args.grammar,
         cart_root: args.cart,
         task_budget: Duration::from_secs(args.budget),
@@ -57,6 +73,10 @@ fn main() -> Result<()> {
         temperature: args.temperature,
         max_predict_per_segment: 512,
         trace_path: args.trace,
+        max_tokens_per_task: 100_000,
+        slot_id: None,
+        ollama: args.ollama,
+        model: args.model,
     };
 
     let daemon = Daemon::new(cfg)?;

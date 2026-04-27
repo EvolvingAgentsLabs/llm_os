@@ -31,10 +31,10 @@ pub enum CartridgeError {
     ManifestMissing(PathBuf),
     #[error("manifest parse failed: {0}")]
     ManifestParse(#[from] serde_json::Error),
-    #[error("schema compile failed for {method}: {source}")]
+    #[error("schema compile failed for {method}: {reason}")]
     SchemaCompile {
         method: String,
-        source: jsonschema::ValidationError<'static>,
+        reason: String,
     },
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -126,7 +126,7 @@ impl Cartridge {
                 .compile(&schema_json)
                 .map_err(|e| CartridgeError::SchemaCompile {
                     method: name.clone(),
-                    source: e.to_owned(),
+                    reason: format!("{e}"),
                 })?;
             schemas.insert(name.clone(), compiled);
 

@@ -57,6 +57,14 @@ pub struct DaemonConfig {
     /// Optional task slot id used by the multi-task layer for KV
     /// isolation against llama-server's slot pool. v0.5+.
     pub slot_id: Option<i32>,
+    /// Use Ollama's native `/api/generate` endpoint instead of
+    /// llama-server's `/v1/completions`. Ollama does not enforce GBNF
+    /// grammar at the sampler level, so the model must follow the ISA
+    /// format via instruction-following alone.
+    pub ollama: bool,
+    /// Model name for Ollama backend (e.g. "qwen2.5:1.5b"). Ignored
+    /// when `ollama` is false (llama-server loads model at startup).
+    pub model: String,
 }
 
 impl Default for DaemonConfig {
@@ -72,6 +80,8 @@ impl Default for DaemonConfig {
             trace_path: None,
             max_tokens_per_task: 32_768,
             slot_id: None,
+            ollama: false,
+            model: String::new(),
         }
     }
 }
@@ -98,6 +108,35 @@ struct StreamDelta {
     /// True if this is the terminating event for the request.
     #[serde(default)]
     stop: bool,
+}
+
+/// Ollama `/api/generate` streaming response (NDJSON).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OllamaStreamDelta {
+    #[serde(default)]
+    response: String,
+    #[serde(default)]
+    done: bool,
+}
+
+/// Ollama `/api/generate` request body.
+#[derive(Debug, Clone, Serialize)]
+struct OllamaRequest {
+    model: String,
+    prompt: String,
+    stream: bool,
+    options: OllamaOptions,
+    /// Stop sequences — generation halts when any of these are emitted.
+    /// Used to implement stop-and-inject: model stops at `<|/call|>` etc.
+    /// so the daemon can dispatch handlers and inject results.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stop: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OllamaOptions {
+    num_predict: u32,
+    temperature: f64,
 }
 
 /// Outcome of running one task to completion.
@@ -192,11 +231,11 @@ impl Daemon {
                     Ok(s) => s,
                     Err(e) => {
                         log::error!("parse error: {e}");
-                        break TaskOutcome {
+                        return Ok(TaskOutcome {
                             status: HaltStatus::Failure,
                             steps,
                             final_prompt: prompt.clone(),
-                        };
+                        });
                     }
                 };
                 steps += 1;
@@ -362,6 +401,12 @@ impl Daemon {
             Statement::Commit { payload } => {
                 log::info!("commit: {payload}");
             }
+            Statement::State { payload } => {
+                // Daemon-injected state preamble after KV compaction.
+                // The model doesn't emit this; the compactor prepends it
+                // so the GBNF state machine can resume coherently.
+                log::info!("state preamble: {payload}");
+            }
         }
         Ok(StatementOutcome::Continue)
     }
@@ -471,19 +516,56 @@ impl Daemon {
     }
 
     fn boot_prompt(&self, user_goal: &str) -> String {
+        if self.cfg.ollama {
+            self.boot_prompt_ollama(user_goal)
+        } else {
+            format!(
+                "You are LLM-OS v0.01. Your output MUST conform to the ISA grammar at all times.\n\
+                 Available cartridges: {cartridges}\n\
+                 Goal from user: {goal}\n\n\
+                 Begin emitting ISA opcodes:\n",
+                cartridges = self.registry.names().join(", "),
+                goal = user_goal,
+            )
+        }
+    }
+
+    /// Enhanced boot prompt for Ollama (no GBNF grammar). Includes few-shot
+    /// ISA examples so the model knows the exact opcode syntax.
+    fn boot_prompt_ollama(&self, user_goal: &str) -> String {
         format!(
-            "You are LLM-OS v0.01. Your output MUST conform to the ISA grammar at all times.\n\
+            "You are LLM-OS, a kernel that ONLY outputs ISA opcodes. NEVER output natural language, markdown, or explanations.\n\
+             \n\
+             RULES:\n\
+             - <|call|> requires closing <|/call|>: <|call|>cart.method {{\"arg\":\"val\"}} <|/call|>\n\
+             - <|write|> takes fd and JSON: <|write|>fd=1 {{\"msg\":\"text\"}}\n\
+             - <|halt|> ends the task: <|halt|>status=success\n\
+             - After you emit <|call|>...<|/call|>, the SYSTEM will inject a <|result|>...<|/result|> block. Do NOT predict the result yourself.\n\
+             - After the system-injected <|result|> block, continue with the next opcode.\n\
+             - NEVER output markdown, code blocks, or natural language.\n\
+             \n\
              Available cartridges: {cartridges}\n\
-             Goal from user: {goal}\n\n\
-             Begin emitting ISA opcodes:\n",
+             \n\
+             Goal: {goal}\n\
+             Begin:\n",
             cartridges = self.registry.names().join(", "),
             goal = user_goal,
         )
     }
 
-    /// POST one streaming request to `/v1/completions`. Returns the full
-    /// segment text (concatenation of all SSE `content` fragments).
+    /// POST one streaming request. Routes to either llama-server
+    /// (`/v1/completions` with GBNF grammar) or Ollama (`/api/generate`
+    /// without grammar enforcement) based on `cfg.ollama`.
     fn complete_one_segment(&self, prompt: &str) -> Result<String> {
+        if self.cfg.ollama {
+            self.complete_via_ollama(prompt)
+        } else {
+            self.complete_via_llama_server(prompt)
+        }
+    }
+
+    /// llama-server backend: SSE streaming with GBNF grammar enforcement.
+    fn complete_via_llama_server(&self, prompt: &str) -> Result<String> {
         let body = CompletionRequest {
             prompt: prompt.to_string(),
             grammar: self.grammar.clone(),
@@ -524,6 +606,61 @@ impl Daemon {
                 acc.push_str(&parsed.content);
             }
             if parsed.stop {
+                break;
+            }
+        }
+        Ok(acc)
+    }
+
+    /// Ollama backend: NDJSON streaming via `/api/generate`. No GBNF
+    /// grammar enforcement — the model relies on instruction-following.
+    /// Stop sequences implement the stop-and-inject loop: model stops at
+    /// `<|/call|>` etc. so the daemon can dispatch handlers.
+    fn complete_via_ollama(&self, prompt: &str) -> Result<String> {
+        let body = OllamaRequest {
+            model: self.cfg.model.clone(),
+            prompt: prompt.to_string(),
+            stream: true,
+            options: OllamaOptions {
+                num_predict: self.cfg.max_predict_per_segment,
+                temperature: self.cfg.temperature,
+            },
+            // Stop after opcodes that need daemon response. Ollama
+            // includes the stop token in output, so the parser sees
+            // the complete opcode. `<|result|>` prevents the model
+            // from self-predicting daemon-injected results.
+            stop: vec![
+                "<|/call|>".into(),
+                "<|result|>".into(),
+            ],
+        };
+
+        let url = format!("{}/api/generate", self.cfg.server_url);
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(120))
+            .build();
+        let resp = agent
+            .post(&url)
+            .set("Content-Type", "application/json")
+            .send_json(&body)
+            .map_err(|e| anyhow!("Ollama POST failed: {e}"))?;
+
+        let reader = BufReader::new(resp.into_reader());
+        let mut acc = String::new();
+        for line in reader.lines() {
+            let line = line.context("reading Ollama NDJSON line")?;
+            let line = line.trim_end();
+            if line.is_empty() {
+                continue;
+            }
+            let parsed: OllamaStreamDelta = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if !parsed.response.is_empty() {
+                acc.push_str(&parsed.response);
+            }
+            if parsed.done {
                 break;
             }
         }

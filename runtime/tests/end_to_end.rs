@@ -25,6 +25,8 @@ fn make_config(port: u16) -> DaemonConfig {
         trace_path: None,
         max_tokens_per_task: 100_000,
         slot_id: None,
+        ollama: false,
+        model: String::new(),
     }
 }
 

@@ -83,6 +83,7 @@ pub fn opcode_string(op: Opcode) -> &'static str {
         Opcode::Commit => "<|commit|>",
         Opcode::Fault => "<|fault|>",
         Opcode::Policy => "<|policy|>",
+        Opcode::State => "<|state|>",
     }
 }
 

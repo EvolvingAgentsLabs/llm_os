@@ -190,7 +190,7 @@ fn handle_one(
 
     match next {
         Some(ScriptedResponse::Completion(text)) => {
-            write_sse_stream(&mut stream, &[text])?;
+            write_sse_stream(&mut stream, &[&text])?;
         }
         Some(ScriptedResponse::CompletionChunks(chunks)) => {
             let refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
