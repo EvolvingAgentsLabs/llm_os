@@ -1,14 +1,4 @@
-<p align="center">
-  <img src="assets/banner-architecture.svg" alt="ARCHITECTURE" width="100%"/>
-</p>
-
-<p align="center">
-  <strong>llm_os</strong> &nbsp;//&nbsp; kernel architecture &nbsp;//&nbsp; <code>v0.5-rc1</code>
-</p>
-
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
+# Architecture
 
 > Companion to [`README.md`](../README.md) and [`grammar/isa-spec.md`](../grammar/isa-spec.md).
 > The README is the *pitch*, the ISA spec is the *contract*, this doc is
@@ -16,7 +6,7 @@
 
 ---
 
-## ▸ §1 the OS-as-LLM mapping
+## The OS-as-LLM mapping
 
 The thesis: `llm_os` is not "an agent that uses an LLM". It is an OS
 where the LLM itself plays the role of the CPU. Every primitive of a
@@ -60,11 +50,7 @@ it's the **type system enforced by the sampler at decode time**. Wrong
 sequences are physically impossible to emit. Prompt engineering moves
 to the compiler level.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §2 the ring model
+## The ring model
 
 ```mermaid
 %%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#18181b','primaryTextColor':'#e4e4e7','primaryBorderColor':'#ffffff','lineColor':'#a1a1aa','secondaryColor':'#27272a','background':'#000','mainBkg':'#18181b','clusterBkg':'#000','clusterBorder':'#a1a1aa','edgeLabelBackground':'#000','fontFamily':'ui-monospace, monospace'}}}%%
@@ -113,11 +99,7 @@ The deeper the ring, the harder the determinism. R1 is the sampler-
 level guarantee that the LLM cannot emit a malformed instruction
 sequence.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §3 the dispatch loop
+## The dispatch loop
 
 ```mermaid
 %%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#18181b','primaryTextColor':'#e4e4e7','primaryBorderColor':'#ffffff','lineColor':'#a1a1aa','secondaryColor':'#27272a','background':'#000','mainBkg':'#18181b','actorBkg':'#18181b','actorBorder':'#ffffff','actorTextColor':'#e4e4e7','signalColor':'#a1a1aa','signalTextColor':'#e4e4e7','noteBkgColor':'#27272a','noteTextColor':'#bff7ff','noteBorderColor':'#00d4ff','activationBkgColor':'#ffffff','sequenceNumberColor':'#000','fontFamily':'ui-monospace, monospace'}}}%%
@@ -164,11 +146,7 @@ Three things to notice:
   lurks if not handled carefully — see §5 and
   [`NEXT_STEPS.md §2`](NEXT_STEPS.md).
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §4 cartridge anatomy
+## Cartridge anatomy
 
 ```mermaid
 %%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#18181b','primaryTextColor':'#e4e4e7','primaryBorderColor':'#ffffff','lineColor':'#a1a1aa','secondaryColor':'#27272a','background':'#000','mainBkg':'#18181b','clusterBkg':'#000','clusterBorder':'#a1a1aa','edgeLabelBackground':'#000','fontFamily':'ui-monospace, monospace'}}}%%
@@ -208,11 +186,7 @@ When the LLM emits `<|call|>system.summarize {"path":"./README.md"} <|/call|>`:
 6. **Sampler** resumes. Grammar predicted this exact shape so no
    re-priming is needed.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §5 KV cache · the RAM model
+## KV cache · the RAM model
 
 ```mermaid
 %%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#18181b','primaryTextColor':'#e4e4e7','primaryBorderColor':'#ffffff','lineColor':'#a1a1aa','secondaryColor':'#27272a','background':'#000','mainBkg':'#18181b','clusterBkg':'#000','clusterBorder':'#a1a1aa','edgeLabelBackground':'#000','fontFamily':'ui-monospace, monospace'}}}%%
@@ -259,11 +233,7 @@ The compactor will preserve:
 before dropping any tokens. The summary that replaces older tokens is
 prepended with explicit state markers so the sampler resumes coherently.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §6 capability · the ring model in practice
+## Capability · the ring model in practice
 
 ```mermaid
 %%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#18181b','primaryTextColor':'#e4e4e7','primaryBorderColor':'#ffffff','lineColor':'#a1a1aa','background':'#000','mainBkg':'#18181b','clusterBkg':'#000','clusterBorder':'#a1a1aa','edgeLabelBackground':'#000','fontFamily':'ui-monospace, monospace'}}}%%
@@ -302,11 +272,7 @@ constituent tokens to minimize false positives on bootstrap kernels.
 On fine-tuned kernels (post-v0.1) where each opcode is a single token,
 the bias is exact. The daemon-side reject remains the hard fence.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §7 dialect · token economy as cycle optimization
+## Dialect · token economy as cycle optimization
 
 At 8 Hz on a Pi 5, every token saved is a cycle saved. The dialect
 layer compresses the wire format of high-frequency calls without
@@ -324,11 +290,7 @@ Each cartridge can declare a `dialect.gbnf` adding shorthand syntax
 that maps to its full JSON schema. The grammar accepts both forms;
 the parser canonicalizes before schema validation.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §8 dual-brain routing
+## Dual-brain routing
 
 ```mermaid
 %%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#18181b','primaryTextColor':'#e4e4e7','primaryBorderColor':'#ffffff','lineColor':'#a1a1aa','secondaryColor':'#27272a','background':'#000','mainBkg':'#18181b','clusterBkg':'#000','clusterBorder':'#a1a1aa','edgeLabelBackground':'#000','fontFamily':'ui-monospace, monospace'}}}%%
@@ -361,11 +323,7 @@ on the manifest and routes through the injected proxy. Cloud creds
 from `LLM_OS_CLOUD_*` env vars. Dynamic WASM-sandboxed subagent
 loading is a v1.0 goal.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §9 cross-cutting invariants
+## Cross-cutting invariants
 
 The five non-negotiables, encoded in tests:
 
@@ -381,11 +339,7 @@ The five non-negotiables, encoded in tests:
 5. **Cartridge handlers are pure** with respect to KV state. Side
    effects go through declared schemas; no out-of-band mutation.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §10 file map
+## File map
 
 ```
 runtime/
@@ -439,11 +393,7 @@ image/
 └── overlay/                ← runtime + cart + model in rootfs
 ```
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §11 recent changes (v0.1 → v0.5-rc1)
+## Recent changes (v0.1 → v0.5-rc1)
 
 Shipped in `v0.1-rc1` and `v0.5-rc1` (both 2026-04-25):
 
@@ -482,7 +432,7 @@ Shipped in `v0.1-rc1` and `v0.5-rc1` (both 2026-04-25):
 - **Projection re-baseline (v0.1).** `docs/projection-rebaseline-2026-04-25.md`
   benchmarked per-syscall token costs and throughput projections.
 
-## ▸ §12 next steps · v1.0 roadmap
+## Next steps · v1.0 roadmap
 
 Six items stand between v0.5-rc1 and production-ready v1.0.
 Full details in [`NEXT_STEPS.md`](NEXT_STEPS.md).
@@ -521,15 +471,3 @@ emission. The fix: walk the dropped window, extract ISA state
 - Custom kernel-mode model from scratch (post-v1.0 research)
 
 Full analysis: [`docs/NEXT_STEPS.md`](NEXT_STEPS.md).
-
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-<p align="center">
-  <img src="assets/mark.svg" alt="" width="48"/>
-</p>
-
-<p align="center">
-  <sub><code>// ARCH.MAP // 13 OPCODES · 5 INVARIANTS · 4 RINGS · V1.0 ROADMAP</code></sub>
-</p>

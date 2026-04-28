@@ -1,14 +1,4 @@
-<p align="center">
-  <img src="assets/banner-tutorial.svg" alt="TUTORIAL — write your first cartridge · 30 min" width="100%"/>
-</p>
-
-<p align="center">
-  <strong>Tutorial</strong> &nbsp;//&nbsp; write your first cartridge &nbsp;//&nbsp; <code>cart/system/timer</code>
-</p>
-
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
+# Tutorial
 
 > 30-minute walkthrough. By the end you'll have a working `system.timer`
 > cartridge mounted in `iod` with three syscalls (`set`, `list`, `cancel`),
@@ -21,7 +11,7 @@ applies to any cartridge.
 
 ---
 
-## ▸ §0 prerequisites
+## Prerequisites
 
 Make sure the kernel boots first:
 
@@ -33,11 +23,7 @@ cd llm_os
 
 If that works, you're ready.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §1 scaffold the cartridge
+## Scaffold the cartridge
 
 ```bash
 mkdir -p cart/system/timer/schemas
@@ -61,11 +47,7 @@ The handler itself goes in `runtime/handlers.rs` for v0.5; in v1.0 each
 cartridge ships its own `.wasm` (see
 [`NEXT_STEPS.md §4`](NEXT_STEPS.md)).
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §2 write the manifest · `manifest.json`
+## Write the manifest · `manifest.json`
 
 ```json
 {
@@ -96,11 +78,7 @@ cartridge ships its own `.wasm` (see
 | `capabilities.requires` | What this cartridge needs from the host (e.g. clock, filesystem read, network). The mask checks before mount. |
 | `capabilities.grants` | What downstream cartridges this one is allowed to call. Empty = no fan-out. |
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §3 write the schemas
+## Write the schemas
 
 ### `schemas/set.args.schema.json`
 
@@ -168,11 +146,7 @@ The schemas are the **type signatures**. The daemon turns each
 syntactically-correct call shape; then the validator double-checks
 semantics.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §4 add a dialect (optional but recommended)
+## Add a dialect (optional but recommended)
 
 For high-frequency cartridges, the verbose JSON wire format burns
 tokens. Add a dialect:
@@ -197,11 +171,7 @@ The dialect parser canonicalizes both forms before schema validation
 saved token is a saved cycle — see
 [`ARCHITECTURE.md §7`](ARCHITECTURE.md).
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §5 write the handler
+## Write the handler
 
 For v0.5, handlers live in [`runtime/handlers.rs`](../runtime/handlers.rs).
 Open that file and add:
@@ -292,11 +262,7 @@ table.register("system.timer.list",   handle_system_timer_list);
 table.register("system.timer.cancel", handle_system_timer_cancel);
 ```
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §6 write tests
+## Write tests
 
 ### grammar fixtures
 
@@ -361,11 +327,7 @@ fn timer_set_rejects_negative() {
 cargo test --release --test timer
 ```
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §7 boot + test the dispatch
+## Boot + test the dispatch
 
 ```bash
 # Reboot the daemon so it picks up the new cartridge:
@@ -417,11 +379,7 @@ Trace excerpt:
 ]
 ```
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §8 try the dialect
+## Try the dialect
 
 If you wrote `dialect.gbnf` in §4, the model can also emit:
 
@@ -442,11 +400,7 @@ curl -X POST http://localhost:8080/dispatch -d '{
 }'
 ```
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §9 commit
+## Commit
 
 ```bash
 git add cart/system/timer \
@@ -466,11 +420,7 @@ Per the contributor checklist, every cartridge PR should:
 - ✅ include a handler unit test for happy + error paths
 - ❌ not introduce new `cargo` dependencies without justification
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §10 what you've just built
+## What you've just built
 
 You added a fully working syscall to `llm_os` in under 30 minutes,
 **without touching any of these things**:
@@ -486,11 +436,7 @@ without expanding the kernel attack surface. In v1.0 (see
 WASM sandbox, making this isolation a real Ring-3 boundary rather than
 a same-process convention.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §11 where to go next
+## Where to go next
 
 - [`USAGE.md`](USAGE.md) — operator guide for inspection, troubleshooting,
   policy mask manipulation.
@@ -499,15 +445,3 @@ a same-process convention.
 - [`NEXT_STEPS.md`](NEXT_STEPS.md) — where the kernel goes from v0.5 to
   v1.0. Most relevant to cartridge authors: §4 (WASM sandbox) and §6
   (single-token tokenizer fine-tune).
-
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-<p align="center">
-  <img src="assets/mark.svg" alt="" width="48"/>
-</p>
-
-<p align="center">
-  <sub><code>// BUILD.SUCCESS // 11 STEPS · system.timer · KERNEL://llm_os</code></sub>
-</p>

@@ -1,14 +1,4 @@
-<p align="center">
-  <img src="assets/banner-roadmap.svg" alt="NEXT STEPS — grammar · compact · caps · wasm" width="100%"/>
-</p>
-
-<p align="center">
-  <strong>Roadmap</strong> &nbsp;//&nbsp; <code>llm_os</code> &nbsp;//&nbsp; v0.5 → v1.0
-</p>
-
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
+# Roadmap
 
 > Roadmap derived from the April 2026 architecture review. The framing:
 > the OS-as-LLM thesis is mechanically sound and validated at v0.5, but
@@ -36,11 +26,7 @@ The order reflects priority. **§1 unblocks the 8 Hz target on Pi 5**;
 trace in the archive; the rest harden security and make the runtime
 robust to model swaps.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §1 in-llama.cpp grammar swap · the 1-request fix
+## In-llama.cpp grammar swap · the 1-request fix
 
 > **The problem.** The current per-method GBNF design (see the now-
 > archived `grammar-swap-design.md`) requires 3 HTTP requests per
@@ -115,11 +101,7 @@ flowchart LR
   └──────────────────────────────────────────────────────────────────┘
 ```
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §2 ISA-aware KV compactor · don't drop pending state
+## ISA-aware KV compactor · don't drop pending state
 
 > **The problem.** [`runtime/swap.rs`](../runtime/swap.rs) triggers
 > compaction at 70% KV utilization. The current implementation
@@ -189,11 +171,7 @@ session resume and pushes the recovered state.
   single grammar reject.
 - Trace shows `compactions: N` with `compaction_ok: true` for each.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §3 three-strikes recovery · break the retry loop
+## Three-strikes recovery · break the retry loop
 
 > **The problem.** When the LLM emits malformed args, the daemon
 > injects `<|result|>{"error":"schema_violation",...}<|/result|>`. If
@@ -265,11 +243,7 @@ flowchart LR
 - Unit test: synthetic schema violation 5× in a row escalates exactly
   on the 3rd consecutive failure.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §4 WASM cartridge sandbox · real Ring-3 isolation
+## WASM cartridge sandbox · real Ring-3 isolation
 
 > **The problem.** Cartridges currently run as in-process Rust
 > functions registered in [`runtime/handlers.rs`](../runtime/handlers.rs).
@@ -341,11 +315,7 @@ No raw filesystem, no `std::process::exit`, no environment access.
 - Cartridge call latency overhead (vs in-process) ≤ 0.5 ms cold,
   ≤ 0.05 ms warm.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §5 daemon-side opcode reject · the hard fence
+## Daemon-side opcode reject · the hard fence
 
 > **The problem.** Capability enforcement currently relies on logit
 > bias — the sampler is told "set the logit of `<|call|>` to −∞ when
@@ -391,11 +361,7 @@ flowchart LR
 - The bootstrap model test (Qwen 2.5 3B with deliberate multi-token
   splits) produces zero successful denials of service.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §6 single-token ISA fine-tune · uniform latency
+## Single-token ISA fine-tune · uniform latency
 
 > **The problem.** Bootstrap models (Gemma 4, Qwen 2.5) tokenize the
 > 13 ISA opcodes inconsistently — `<|call|>` may be 1 token or 5
@@ -446,11 +412,7 @@ ISA traces ensures the model uses these tokens fluently.
 - Capability bias (§5 hint path) reliable enough that runtime reject
   almost never fires under benign workloads.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §7 summary checklist
+## Summary checklist
 
 ```
   ┌─[ NEXT 90 DAYS ]──────────────────────────────────────────────┐
@@ -488,11 +450,7 @@ ISA traces ensures the model uses these tokens fluently.
   └────────────────────────────────────────────────────────────────┘
 ```
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §8 explicit non-goals · what is NOT shipping next
+## Explicit non-goals · what is NOT shipping next
 
 To keep this roadmap honest, here's what stays out of the v1.0 scope:
 
@@ -510,11 +468,7 @@ To keep this roadmap honest, here's what stays out of the v1.0 scope:
 These belong in a future `BACKLOG.md` if they earn placement after the
 v1.0 priorities ship.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §9 final verdict (from the architecture review)
+## Final verdict (from the architecture review)
 
 > *You are building something exceptional here. The transition from*
 > *"LLM as text generator" to "LLM as instruction sequencer" is the*
@@ -525,15 +479,3 @@ v1.0 priorities ship.
 
 §2 (the ISA-aware compactor) is therefore the tightest technical
 crux. §1 is the user-facing perf crux. The other four are hardening.
-
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-<p align="center">
-  <img src="assets/mark.svg" alt="" width="48"/>
-</p>
-
-<p align="center">
-  <sub><code>// ROADMAP // §1 GRAMMAR · §2 COMPACT · §3 RECOVER · §4 SANDBOX · §5 CAPS · §6 TOKENS</code></sub>
-</p>

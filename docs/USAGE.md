@@ -1,14 +1,4 @@
-<p align="center">
-  <img src="assets/banner-usage.svg" alt="USAGE GUIDE — boot · mount · dispatch · inspect" width="100%"/>
-</p>
-
-<p align="center">
-  <strong>Operator's Guide</strong> &nbsp;//&nbsp; <code>llm_os</code> &nbsp;//&nbsp; boot · dispatch · inspect
-</p>
-
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
+# Usage
 
 > Practical guide for someone running the kernel. If you want to *write*
 > a cartridge, see [`TUTORIAL.md`](TUTORIAL.md). If you want to
@@ -16,7 +6,7 @@
 
 ---
 
-## ▸ §1 prerequisites
+## Prerequisites
 
 ```
   ┌─────────────────────────────────────────────────────────────┐
@@ -40,11 +30,7 @@ make -j  # or cmake-based; needs --grammar enabled
 ./llama-server --version    # smoke test
 ```
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §2 one-shot bootstrap
+## One-shot bootstrap
 
 ```bash
 git clone https://github.com/EvolvingAgentsLabs/llm_os.git
@@ -86,11 +72,7 @@ If everything goes well you should see:
 ▸ steady            ▸ 8.2 Hz · KV=14%
 ```
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §3 manual boot
+## Manual boot
 
 If the quickstart script is too opinionated, here's the manual boot.
 
@@ -141,11 +123,7 @@ Response:
 }
 ```
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §4 endpoints reference
+## Endpoints reference
 
 ```
   ┌─[ iod HTTP API ]─────────────────────────────────────────────┐
@@ -176,11 +154,7 @@ Response:
   └───────────────────────────────────────────────────────────────┘
 ```
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §5 tier selection · local vs cloud
+## Tier selection · local vs cloud
 
 Three ways to control which sampler runs the dispatch:
 
@@ -232,11 +206,7 @@ model    = "gemini-2.5-flash"
 endpoint = "https://generativelanguage.googleapis.com/v1beta"
 ```
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §6 capability · the policy mask
+## Capability · the policy mask
 
 The default mask grants every mounted cartridge. To restrict, POST a
 new mask:
@@ -271,11 +241,7 @@ A typical output:
 }
 ```
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §7 inspecting a dispatch
+## Inspecting a dispatch
 
 Every dispatch produces a trace. By default they live in
 `~/.cache/llm_os/traces/`.
@@ -311,11 +277,7 @@ debugging. If `hz_avg` drops, look at `compactions` and
 `schema_violations`. If a cartridge times out, look at `result_ms`
 in its `op` entry.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §8 troubleshooting
+## Troubleshooting
 
 ### "the sampler stalls"
 
@@ -390,11 +352,7 @@ needs the v1.0 single-token fine-tune
 ([`NEXT_STEPS.md §6`](NEXT_STEPS.md)). Daemon-side reject still works
 in the meantime.
 
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-## ▸ §9 quick reference
+## Quick reference
 
 ```
   ┌─[ COMMANDS ]──────────────────────────────────────────────────────┐
@@ -415,15 +373,3 @@ in the meantime.
 ```
 
 Now go author your own cartridge → [`TUTORIAL.md`](TUTORIAL.md).
-
-<p align="center">
-  <img src="assets/divider.svg" alt="" width="100%"/>
-</p>
-
-<p align="center">
-  <img src="assets/mark.svg" alt="" width="48"/>
-</p>
-
-<p align="center">
-  <sub><code>// USAGE.GUIDE // BOOT · DISPATCH · INSPECT</code></sub>
-</p>
