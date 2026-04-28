@@ -39,7 +39,7 @@ The thesis from `design/llm-os-design.md` and the refinement in `design/llm-os-r
 - Manifest spec: [`docs/cartridge-manifest.md`](docs/cartridge-manifest.md).
 - Hierarchical layout adopted from day one (refinement §2.2): `cart/<domain>/<name>/manifest.json` + `full.md` + `schemas/`.
 - Five cartridges shipped:
-  - `cart/io/roclaw` — **real handler**. Rust port of RoClaw's `BytecodeCompiler`. 13 methods → 6-byte UDP frames at `127.0.0.1:4210`. Includes the design-doc canonical example `forward {left:150,right:150}` → `AA 01 96 96 01 FF`.
+  - `cart/io/roclaw` — **real handler**. Rust port of skillos_robot's `BytecodeCompiler`. 13 methods → 6-byte UDP frames at `127.0.0.1:4210`. Includes the design-doc canonical example `forward {left:150,right:150}` → `AA 01 96 96 01 FF`.
   - `cart/sim/sim_world` — **real handler**. 4×1 grid world for the L1 e2e fixture. `step({dir})`, `observe`, `reset`.
   - `cart/domestic/cooking` — **stubbed methods**, real schemas. Ported from skillos_mini.
   - `cart/domestic/residential-electrical` — **stubbed methods**, real schemas. Ported from skillos_mini.
@@ -99,7 +99,7 @@ These are explicit deferrals — see `docs/CONTINUATION_PLAN.md` §5 + refinemen
 1. **GBNF rejects multi-line alternations.** `top-stmt ::= read-stmt\n           | write-stmt\n …` errors with `expecting name at | …`. llama.cpp's GBNF requires alternations on one line or inside `( … )`.
 2. **`test-gbnf-validator` always exits 0.** It signals success via stdout text (`Input string is valid` / `Input string is invalid`), not the exit code. The validator was renamed from `llama-gbnf-validator` to `test-gbnf-validator` and gated to `BUILD_SHARED_LIBS=OFF` on Windows.
 3. **Gemma 4 has `<think>` as a single token.** `<|think|>` tokenizes to 1 token on Gemma 4 vs 5 on Qwen 2/3 — a real kernel-selection signal in favor of Gemma 4 E2B.
-4. **RoClaw has 13 opcodes, not 14.** The audit's "14 opcodes (includes ACK)" is incorrect — the actual `Opcode` const in `bytecode_compiler.ts` lists 13 entries (no ACK). Refinement §1.3 was wrong about this; the Rust port (`runtime/roclaw.rs`) has 13.
+4. **skillos_robot has 13 opcodes, not 14.** The audit's "14 opcodes (includes ACK)" is incorrect — the actual `Opcode` const in `bytecode_compiler.ts` lists 13 entries (no ACK). Refinement §1.3 was wrong about this; the Rust port (`runtime/roclaw.rs`) has 13.
 5. **Per-syscall token cost is ~26 tokens** on bootstrap kernels. At 8 Hz on Pi 5 that's ~3.3 s per syscall — confirms the design's "1–2 syscalls/sec" claim. Single-token opcodes drop this to ~10 tokens (~1.25 s, 2.6× speedup); the rest of the "5–10×" headroom from refinement §2.3 dialects is not yet realized in v0.01.
 6. **The grammar's `safe-text` permissiveness was real.** Refinement §1.4 raised this from theoretical to confirmed on inspection; tightening to `json` fixed it.
 

@@ -30,4 +30,4 @@ On UDP send failure: `{"ok": false, "bytes": 6, "hex": "...", "error": "..."}` �
 
 ## Reference
 
-Source: `RoClaw/src/2_qwen_cerebellum/bytecode_compiler.ts` — port lives in `runtime/roclaw.rs`. Tests in the same file cover the design §1.3 example (`forward 150 150` → `AA 01 96 96 01 FF`).
+Source: `skillos_robot/src/2_qwen_cerebellum/bytecode_compiler.ts` — port lives in `runtime/roclaw.rs`. Tests in the same file cover the design §1.3 example (`forward 150 150` → `AA 01 96 96 01 FF`).

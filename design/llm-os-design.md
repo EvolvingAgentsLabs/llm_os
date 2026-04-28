@@ -1,4 +1,4 @@
-# LLM-OS on llama.cpp: A Design Grounded in SkillOS, SkillOS-mini, and RoClaw
+# LLM-OS on llama.cpp: A Design Grounded in SkillOS, SkillOS-mini, and skillos_robot
 
 *For Matias Molinas — EvolvingAgentsLabs — April 2026*
 
@@ -10,7 +10,7 @@ You have three projects that, read together, are a single thesis being assembled
 
 - **SkillOS** treats the LLM as a user-space interpreter over markdown agents and tools — it is an *application framework* running on top of Claude Code.
 - **SkillOS-mini** pushes the same substrate to the edge: wllama in the browser, LiteRT on Android, cartridges (schemas + validators) as sealed device drivers, and compaction as swap.
-- **RoClaw** already crosses the final abstraction boundary you are reaching for: a VLM emits a **13-opcode bytecode ISA** as raw hex (`AA 01 64 64 CB FF`) and the firmware executes it with one `memcpy`. That is not a framework — that is an instruction set architecture.
+- **skillos_robot** already crosses the final abstraction boundary you are reaching for: a VLM emits a **13-opcode bytecode ISA** as raw hex (`AA 01 64 64 CB FF`) and the firmware executes it with one `memcpy`. That is not a framework — that is an instruction set architecture.
 
 The question your prompt is really asking is: **what happens if we stop treating the LLM as a program running inside an OS, and start treating it as the OS itself — with llama.cpp as the CPU, the KV cache as RAM, special tokens as the ISA, and the sampler loop as the fetch-decode-execute cycle?**
 
@@ -42,9 +42,9 @@ This one is much closer to an OS. Reading the repo layout:
 
 You have built most of an OS without calling it one. The missing pieces are (a) a formal ISA, (b) a boot sequence that is just llama.cpp + a GGUF, and (c) the closed-loop execution model where the LLM decides when to reinject its own output.
 
-### 1.3 RoClaw (the piece that makes it real)
+### 1.3 skillos_robot (the piece that makes it real)
 
-RoClaw is your proof that an LLM can emit an ISA directly:
+skillos_robot is your proof that an LLM can emit an ISA directly:
 
 > `JSON (58 bytes): {"cmd":"move_cm","left_cm":10,"right_cm":10,"speed":500}`
 > `Bytecode (6 bytes): AA 01 64 64 CB FF`
@@ -195,7 +195,7 @@ The grammar enforces legal sequences: e.g., `<|read|>` must be followed by a dig
 A ~500-line C or Rust program. It watches llama.cpp's streaming output for ISA opcode tokens. On each opcode:
 
 1. Validate the opcode + its arguments against the grammar's state machine (defense in depth — the grammar should have already guaranteed this, but do not trust).
-2. Execute the side effect against the real OS (read a file, call an API, write to a robot bus over UDP — your RoClaw bytecode path is already a template).
+2. Execute the side effect against the real OS (read a file, call an API, write to a robot bus over UDP — your skillos_robot bytecode path is already a template).
 3. Tokenize the result and inject it into the KV cache as a new input segment, wrapped in `<|result|> ... <|/result|>`.
 4. Resume sampling.
 
@@ -240,7 +240,7 @@ The LLM controls when to reinject output as input via `<|loop|>`. Inside the loo
 
 This is a closed control loop where **the model decides the next action based on the previous result, and the model decides when the loop terminates.** No external agent framework is injecting "Observation:" strings. The ISA is what it was in the tokenizer all along.
 
-This is the RoClaw Navigation Chain of Thought pattern you already validated — formalized as an OS primitive rather than a navigation-specific prompt template.
+This is the skillos_robot Navigation Chain of Thought pattern you already validated — formalized as an OS primitive rather than a navigation-specific prompt template.
 
 ---
 
@@ -256,7 +256,7 @@ For LLM-OS on a Pi 5, the sweet spot is **Gemma 4 E2B or Qwen 3 2B** at Q4, givi
 
 For cloud mode, you run the same bootloader against a cloud model (GPT-5.4 Codex, Claude Opus 4.6, Kimi K2.5). You get 60–200 Hz — each syscall takes 250–800ms. That is interactive. Same ISA, same grammar, same cartridges. The only change is the server URL.
 
-**Dual-brain Pi deployment** (following RoClaw's pattern): Pi 5 runs E2B as cerebellum at 8 Hz for reflex syscalls, and a cloud API call to Kimi K2.5 or Claude Opus at ~100 Hz provides cortex strategy every 10–30 seconds. This matches your existing dual-brain separation and gives you hybrid autonomy — full local when offline, cloud-boosted when connected.
+**Dual-brain Pi deployment** (following skillos_robot's pattern): Pi 5 runs E2B as cerebellum at 8 Hz for reflex syscalls, and a cloud API call to Kimi K2.5 or Claude Opus at ~100 Hz provides cortex strategy every 10–30 seconds. This matches your existing dual-brain separation and gives you hybrid autonomy — full local when offline, cloud-boosted when connected.
 
 ---
 
@@ -300,7 +300,7 @@ I'm applying the METR 4-month doubling as the backbone, with the caveat that pro
 
 - **Multi-tasking**: preemptive scheduler live, KV cache swapping working, two or three cartridges can run concurrently with their capability sets enforced via per-task logit bias.
 - **Self-hosting**: the LLM-OS can be used to generate training data for its next kernel version, by running a supervisor cartridge that monitors executions and emits cleaned trajectories. This is the Linux 0.11 moment — the system can rebuild itself.
-- **RoClaw integration**: the LLM-OS bytecode layer drops directly to the RoClaw `AA 01 64 64 CB FF` layer via the `/dev/roclaw` cartridge. The physical robot becomes a first-class device in the OS, with no additional glue code.
+- **skillos_robot integration**: the LLM-OS bytecode layer drops directly to the skillos_robot `AA 01 64 64 CB FF` layer via the `/dev/roclaw` cartridge. The physical robot becomes a first-class device in the OS, with no additional glue code.
 - **Capability (extrapolating METR 4-month doubling from ~2h17min today, which is a cloud-model frontier)**: frontier cloud model horizon ~4–5 hours. Local Pi 5 model horizon (which lags frontier by ~12–18 months in benchmark terms historically): ~1–2 hours.
 - **What to release**: `llm_os/v0.5` — equivalent to Linux 0.11, self-hosting, multi-cartridge.
 
@@ -345,7 +345,7 @@ A proposed 6-week sprint for v0.01, leaning hard on what SkillOS-mini already ha
 
 **Week 4 — closed-loop validation.** Implement `<|loop|>` / `<|break|>` at the grammar level. Write a test that puts the Pi 5 through a 10-minute navigate-and-report task against a fixture environment. Measure token count, time, success rate.
 
-**Week 5 — RoClaw integration.** `/dev/roclaw` cartridge wrapping the existing 6-byte UDP ISA. The LLM-OS emits `<|call|>roclaw.forward{"left":150,"right":150}<|/call|>`; the cartridge translates to `AA 01 96 96 01 FF` and sends over UDP. The Dual-Brain Pi deployment runs end-to-end.
+**Week 5 — skillos_robot integration.** `/dev/roclaw` cartridge wrapping the existing 6-byte UDP ISA. The LLM-OS emits `<|call|>roclaw.forward{"left":150,"right":150}<|/call|>`; the cartridge translates to `AA 01 96 96 01 FF` and sends over UDP. The Dual-Brain Pi deployment runs end-to-end.
 
 **Week 6 — cloud fallback + compactor + release.** Implement `<|fault|>` → cloud API. Ship the compactor as the swap daemon. Tag v0.01. Write the README. Put it on HuggingFace for the kernel model, GitHub for everything else.
 
@@ -355,7 +355,7 @@ After that, Week 7+ is the fine-tuning loop to get v0.1 (ISA-native model) by mo
 
 ## 9. The one-paragraph version
 
-Your three projects converge on a single architecture. SkillOS-mini has the OS internals (blackboard = IPC, cartridges = drivers, schema-validated retry = protected mode, compactor = swap). RoClaw has the ISA-emission proof (13 opcodes, 6-byte bytecode, one `memcpy`). llama.cpp has the substrate (GBNF at token level, logit bias, JSON-schema-to-grammar, samplers pipeline). The assembly is: define a 13-opcode ISA as GBNF over real tokenizer tokens, boot llama.cpp with that grammar and a 2B-class model, implement a ~500-line I/O daemon that executes syscall tokens against cartridges, and let the model control its own execution loops via explicit `<|loop|>` / `<|break|>` opcodes. On a Pi 5 this runs at ~8 Hz today, which is enough for a cognitive home-assistant OS. A cloud deployment of the same ISA runs at 60–200 Hz and does interactive work. v0.01 is 6 weeks of build. A fine-tuned kernel model is 2 months. Multi-tasking and self-hosting is 6 months. Linux took 30 months from hobby to 1.0; so will this, and the compute trajectory means the system will be substantially more capable than Linux 1.0 was at the equivalent milestone.
+Your three projects converge on a single architecture. SkillOS-mini has the OS internals (blackboard = IPC, cartridges = drivers, schema-validated retry = protected mode, compactor = swap). skillos_robot has the ISA-emission proof (13 opcodes, 6-byte bytecode, one `memcpy`). llama.cpp has the substrate (GBNF at token level, logit bias, JSON-schema-to-grammar, samplers pipeline). The assembly is: define a 13-opcode ISA as GBNF over real tokenizer tokens, boot llama.cpp with that grammar and a 2B-class model, implement a ~500-line I/O daemon that executes syscall tokens against cartridges, and let the model control its own execution loops via explicit `<|loop|>` / `<|break|>` opcodes. On a Pi 5 this runs at ~8 Hz today, which is enough for a cognitive home-assistant OS. A cloud deployment of the same ISA runs at 60–200 Hz and does interactive work. v0.01 is 6 weeks of build. A fine-tuned kernel model is 2 months. Multi-tasking and self-hosting is 6 months. Linux took 30 months from hobby to 1.0; so will this, and the compute trajectory means the system will be substantially more capable than Linux 1.0 was at the equivalent milestone.
 
 ---
 

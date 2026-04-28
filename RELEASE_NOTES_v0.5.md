@@ -79,7 +79,7 @@ let cfg = DaemonConfig::default();
 let tasks = from_goals(
     vec![
         "Plan a weekly menu for 4.".into(),
-        "Drive RoClaw forward 50cm.".into(),
+        "Drive skillos_robot forward 50cm.".into(),
         "Reach (3,0) in sim_world.".into(),
     ],
     cfg,

@@ -6,9 +6,9 @@
 
 ## 0. Why this document exists
 
-The original design doc was drafted before the three sibling repos (`skillos`, `skillos_mini`, `RoClaw`) were re-read end-to-end. A fresh audit found four classes of divergence:
+The original design doc was drafted before the three sibling repos (`skillos`, `skillos_mini`, `skillos_robot`) were re-read end-to-end. A fresh audit found four classes of divergence:
 
-1. **Factual misstatements** — file names, opcode counts, language of validators, and one piece of architecture (RoClaw's bytecode emission path) that the design doc gets backwards in a load-bearing way.
+1. **Factual misstatements** — file names, opcode counts, language of validators, and one piece of architecture (skillos_robot's bytecode emission path) that the design doc gets backwards in a load-bearing way.
 2. **Missed primitives** — capabilities that already exist in the sibling repos and would meaningfully change the LLM-OS implementation if treated as first-class. The design doc treats `skillos` as "user-space" and skips most of its internals; several of those internals are exactly what the LLM-OS needs.
 3. **Plan/disk drift** — the README claims artifacts (`runtime/`, `scripts/validate_grammar.sh`) that don't exist on disk. CONTINUATION_PLAN already flags this; refinement keeps the same posture but tightens what to do first.
 4. **Trajectory framing** — the benchmark data the prompt cites is correctly summarized in design §6. The refinement is in *which* extrapolation is load-bearing and where to insert a re-baseline checkpoint.
@@ -34,14 +34,14 @@ This document does not supersede the design — it amends it.
 | Cooking + residential-electrical + learn cartridges with IEC 60364 compliance | Confirmed. `mobile/src/cartridges/{cooking,residential-electrical,learn}/cartridge.yaml`. IEC reference is in residential-electrical's description; schemas enforce breaker amperage enums (`circuits.schema.json:13`) and wire gauges. | No change — design §1.2 is correct on this. |
 | `<produces>{...}</produces>` contract with retry | Confirmed. `runner.ts:123` defines `PRODUCES_RE`; retry-with-feedback is in `runner.ts:208-227, 790-796`. **Single retry per step**, not unlimited; failure escalates via tier router (`routing.ts:11-20`). | Note the single-retry constraint in design §1.2 — it shapes the `<\|fault\|>` design (cloud fallback fires after one local retry, not after every failure). |
 
-### 1.3 RoClaw
+### 1.3 skillos_robot
 
 | Design claim | Reality | Fix |
 |---|---|---|
-| **13-opcode bytecode ISA** | **14 opcodes** in v1.1: 0x01–0x0B (motion + status + speed + step variants), 0x10 (LED_SET), **0xFD (ACK)**, 0xFE (RESET). Defined in `src/2_qwen_cerebellum/bytecode_compiler.ts:20-34`. | Update everywhere in design + plan + spec that says "13 opcodes" for RoClaw. The LLM-OS ISA's "13 opcodes" coincidence is now exactly that — a coincidence, not a parallel. |
+| **13-opcode bytecode ISA** | **14 opcodes** in v1.1: 0x01–0x0B (motion + status + speed + step variants), 0x10 (LED_SET), **0xFD (ACK)**, 0xFE (RESET). Defined in `src/2_qwen_cerebellum/bytecode_compiler.ts:20-34`. | Update everywhere in design + plan + spec that says "13 opcodes" for skillos_robot. The LLM-OS ISA's "13 opcodes" coincidence is now exactly that — a coincidence, not a parallel. |
 | LLM emits raw hex directly | **Backwards.** Primary path: Gemini Robotics-ER 1.6 emits **structured tool calls**; the `BytecodeCompiler` translates client-side to 6-byte frames. Raw-hex emission is a *fallback* path with a GBNF grammar (`bytecode_compiler.ts:647-649`) used when running against Ollama with grammar-constrained decoding. There are **four compilation modes**: tool-call, grammar, few-shot, host-text. | Material for design §1.3 and §3.1. The "VLM emits the ISA" claim is true only in mode 2. The LLM-OS thesis still holds — but the proof point is "we have a working GBNF that reliably produces the bytecode form when the model supports it" rather than "we have a model that natively emits hex." |
 | Dreaming Engine = tracing-JIT analogue that hoists hot loops to microcode | Half right. Two implementations: `npm run dream:v1` (sliding-window opcode RLE pattern detection, ≥3 occurrences ⇒ promotion) and `npm run dream:loop` (3-phase: baseline → LLM consolidation → post-dream eval). Promoted artifacts are **markdown strategy files** in `src/3_llmunix_memory/strategies/level_{1..4}_*/`, not microcode blobs. | The JIT analogy is fine for §1.3's narrative but should be qualified: it's pattern abstraction → strategy text, not code-gen. The LLM-OS equivalent is closer to "promote a frequent `<\|loop\|>` body to a cartridge method" than to "compile it to a hot opcode." |
-| `<\|loop\|>` / `<\|break\|>` is a formalization of RoClaw's Navigation Chain of Thought pattern | Overstated. RoClaw uses telemetry injection + entropy-based stuck detection (`vision_loop.ts:101-104`: 12-opcode window with <0.5 entropy ⇒ halt) + 45s step timeout. There is no `<\|loop\|>`/`<\|break\|>` in the repo. | The closed-loop primitive is **net new** to LLM-OS, not a formalization of existing code. Design §4.8's claim still stands as a design choice — but it should be framed as "RoClaw demonstrates that VLM-controlled loops work; LLM-OS proposes to make the entry/exit explicit in the ISA" rather than "we are formalizing what RoClaw already does." |
+| `<\|loop\|>` / `<\|break\|>` is a formalization of skillos_robot's Navigation Chain of Thought pattern | Overstated. skillos_robot uses telemetry injection + entropy-based stuck detection (`vision_loop.ts:101-104`: 12-opcode window with <0.5 entropy ⇒ halt) + 45s step timeout. There is no `<\|loop\|>`/`<\|break\|>` in the repo. | The closed-loop primitive is **net new** to LLM-OS, not a formalization of existing code. Design §4.8's claim still stands as a design choice — but it should be framed as "skillos_robot demonstrates that VLM-controlled loops work; LLM-OS proposes to make the entry/exit explicit in the ISA" rather than "we are formalizing what skillos_robot already does." |
 
 ### 1.4 LLM-OS itself (this repo)
 
@@ -85,7 +85,7 @@ These are capabilities that already exist in the sibling repos and that the desi
 
 `runner.ts:249-254` runs validators *after* the entire flow completes, cross-referencing multiple blackboard entries (e.g. `menuComplete` checks both `weekly_menu` and `recipes` exist and reference each other consistently). **The design's `<|halt|>status=success` is too thin.** A model can `<|halt|>` with `success` while the actual task invariants are violated. Add a `post_validators` field to the cartridge manifest; the I/O daemon runs them on `<|halt|>` before declaring the task complete. If they fail, the daemon re-prompts the model with the failure as a `<|result|>` and the model decides whether to continue (re-enter a loop) or `<|halt|>partial`.
 
-### 2.8 RoClaw — GBNF grammar for hex emission as the sub-grammar template
+### 2.8 skillos_robot — GBNF grammar for hex emission as the sub-grammar template
 
 `bytecode_compiler.ts:647-649` defines a working GBNF (`root ::= hex-byte " " hex-byte " " hex-byte " " hex-byte " " hex-byte " " hex-byte`). **This is the smallest working ISA-as-GBNF artifact in the entire org** — a 4-line grammar that constrains a real model on real hardware to emit a real ISA. v0.01 should reuse it as the sub-grammar inside `<|call|>roclaw.*`. Concretely: when the cartridge router dispatches a `<|call|>roclaw.forward`, the daemon swaps in a per-call grammar that requires the result to be six hex bytes, and the cartridge's job becomes "emit those six bytes over UDP." This proves the ISA-as-GBNF thesis end-to-end on a path that already works in production code.
 
@@ -119,14 +119,14 @@ Add C4 (new): **adopt the hierarchical layout from §2.2** — `/cart/index.md` 
 
 L1's acceptance criterion currently says "10 consecutive runs all `<|halt|>status=success`." Tighten: success means `<|halt|>status=success` **and** the post-flow validator (per §2.7) confirms the goal predicate. This catches the failure mode where the model declares success without achieving it.
 
-### Week 5 — RoClaw integration (reuse, don't reinvent)
+### Week 5 — skillos_robot integration (reuse, don't reinvent)
 
 R1 should use the **GBNF + tool-call dual path from §2.8**, not invent a new wire format:
 1. `<|call|>roclaw.forward {"left":150,"right":150}<|/call|>` enters the daemon.
-2. Daemon dispatches to `/cart/roclaw/`, which **runs the existing `BytecodeCompiler`** (ported from `RoClaw/src/2_qwen_cerebellum/bytecode_compiler.ts`).
-3. Result: 6-byte frame on UDP port 4210 (RoClaw's actual port, confirmed in `udp_transmitter.ts:48`).
+2. Daemon dispatches to `/cart/roclaw/`, which **runs the existing `BytecodeCompiler`** (ported from `skillos_robot/src/2_qwen_cerebellum/bytecode_compiler.ts`).
+3. Result: 6-byte frame on UDP port 4210 (skillos_robot's actual port, confirmed in `udp_transmitter.ts:48`).
 
-The skillos `roclaw_bridge.py` referenced in the design and CONTINUATION_PLAN R4 should be deprecated in favor of porting `BytecodeCompiler` directly — the Python bridge is a third copy of code that already exists in canonical form in RoClaw.
+The skillos `roclaw_bridge.py` referenced in the design and CONTINUATION_PLAN R4 should be deprecated in favor of porting `BytecodeCompiler` directly — the Python bridge is a third copy of code that already exists in canonical form in skillos_robot.
 
 ### Week 6 — Cloud fallback + compactor + tag (refined)
 
@@ -143,7 +143,7 @@ Carrying forward CONTINUATION_PLAN R1–R8 with these changes:
 | # | Change |
 |---|---|
 | **R8** (safe-text permissiveness) | **Severity raised from medium→high** and **mitigation pulled into Week 1** — the audit confirmed the rule is too loose in `isa.gbnf:85`. Fix before any validation runs. |
-| **R4** (roclaw_bridge.py drift) | **Mitigation changed**: don't audit drift, *deprecate the bridge*. Port `BytecodeCompiler` from `RoClaw/src/2_qwen_cerebellum/bytecode_compiler.ts` as the canonical implementation. Eliminates the drift class entirely. |
+| **R4** (roclaw_bridge.py drift) | **Mitigation changed**: don't audit drift, *deprecate the bridge*. Port `BytecodeCompiler` from `skillos_robot/src/2_qwen_cerebellum/bytecode_compiler.ts` as the canonical implementation. Eliminates the drift class entirely. |
 | **R7** (METR extrapolation wrong by v1.0) | **Re-baseline checkpoint moved earlier**: from v0.5 to v0.1 (Month 2). The v0.5 self-hosting milestone depends on small-on-device tracking frontier-minus-one; if v0.1 traces show the kernel-fine-tuned 2B is closer to frontier-minus-two, slip v0.5 to Month 9 and tell people now. |
 
 Three new risks the audit surfaced:
@@ -163,7 +163,7 @@ To CONTINUATION_PLAN §3:
 | Decision | Resolution | Justification |
 |---|---|---|
 | Validator implementation language for v0.01 | **Rust functions in a `BUILTIN_VALIDATORS` registry**, not Python | §1.2 + §3 Week 3 — mirrors the TS pattern in `validators_builtin.ts`; eliminates the Python runtime from the Pi 5 footprint; matches design §4.1's "no Python at runtime" target. |
-| RoClaw bridge implementation source | **Port `BytecodeCompiler` from RoClaw, deprecate `skillos/roclaw_bridge.py`** | §2.8 + §3 Week 5 — single canonical source; reuses the working GBNF; proves the ISA-as-GBNF thesis on a path that already works. |
+| skillos_robot bridge implementation source | **Port `BytecodeCompiler` from skillos_robot, deprecate `skillos/roclaw_bridge.py`** | §2.8 + §3 Week 5 — single canonical source; reuses the working GBNF; proves the ISA-as-GBNF thesis on a path that already works. |
 | `safe-text` grammar tightness | **Tighten to JSON-or-quoted-string in v0.01, not v0.1** | §1.4 — the audit confirmed the bug is real; the fix is small; deferring it means every Week 2+ component is built on a permissive contract. |
 | Cartridge layout shape | **Hierarchical (index → domain → cartridge → spec) from v0.01** | §2.2 — even at 3 cartridges the layout is the test; rework cost is low now, prohibitive after v0.1 ships. |
 | Re-baseline of capability projections | **Month 2 (v0.1), not Month 6 (v0.5)** | §4 R7 — earlier signal is cheaper; v0.5 plans depend on the projection holding. |
@@ -185,8 +185,8 @@ The METR 4-month doubling is the single most load-bearing extrapolation in the d
 
 ## 7. The one-paragraph version (revised)
 
-Three sibling repos already contain every primitive an LLM-OS needs: `skillos` provides the syscall taxonomy (`claude-code-tool-map.md`), the hierarchical lazy-loaded skill tree (61% routing-token reduction), and the dialect compression framework (51–97% per-arg savings); `skillos_mini` provides a typed blackboard, a tolerant tool-call parser handling five emission shapes with JSON repair, schema-validated retry with one-shot tier escalation, two-mode LLM-aware compaction, and a cartridge-runner pattern with post-flow cross-blackboard validators; `RoClaw` provides a working GBNF-constrained bytecode emission path (14 opcodes, 6-byte frames, UDP port 4210) where the LLM emits structured tool calls that a client-side compiler turns into hex. The LLM-OS v0.01 sprint is six weeks of *assembly*, not invention: validate the GBNF-as-ISA grammar, fork llama.cpp's server with it, port the existing parsers and validators to Rust, and reuse RoClaw's `BytecodeCompiler` as the `/cart/roclaw/` body. The original design's `<|loop|>`/`<|break|>` closed-loop primitive is genuinely new; everything else is a port. The 4-month METR doubling is the trajectory bet; re-baseline it at v0.1 (Month 2), not v0.5 (Month 6), because the 6-month and 12-month milestones depend on the small-on-device lag staying inside 12–18 months of frontier.
+Three sibling repos already contain every primitive an LLM-OS needs: `skillos` provides the syscall taxonomy (`claude-code-tool-map.md`), the hierarchical lazy-loaded skill tree (61% routing-token reduction), and the dialect compression framework (51–97% per-arg savings); `skillos_mini` provides a typed blackboard, a tolerant tool-call parser handling five emission shapes with JSON repair, schema-validated retry with one-shot tier escalation, two-mode LLM-aware compaction, and a cartridge-runner pattern with post-flow cross-blackboard validators; `skillos_robot` provides a working GBNF-constrained bytecode emission path (14 opcodes, 6-byte frames, UDP port 4210) where the LLM emits structured tool calls that a client-side compiler turns into hex. The LLM-OS v0.01 sprint is six weeks of *assembly*, not invention: validate the GBNF-as-ISA grammar, fork llama.cpp's server with it, port the existing parsers and validators to Rust, and reuse skillos_robot's `BytecodeCompiler` as the `/cart/roclaw/` body. The original design's `<|loop|>`/`<|break|>` closed-loop primitive is genuinely new; everything else is a port. The 4-month METR doubling is the trajectory bet; re-baseline it at v0.1 (Month 2), not v0.5 (Month 6), because the 6-month and 12-month milestones depend on the small-on-device lag staying inside 12–18 months of frontier.
 
 ---
 
-*Audited against `C:/evolvingagents/{skillos,skillos_mini,RoClaw,llm_os}` on 2026-04-24. File and line references are accurate as of that date. All "missed primitive" items are in production code in the cited repos; none are speculative.*
+*Audited against `C:/evolvingagents/{skillos,skillos_mini,skillos_robot,llm_os}` on 2026-04-24. File and line references are accurate as of that date. All "missed primitive" items are in production code in the cited repos; none are speculative.*

@@ -1,7 +1,7 @@
 {
   "name": "roclaw",
   "version": "0.0.1",
-  "description": "RoClaw 6-byte UDP bytecode bridge. Built-in handler — methods compile to BytecodeFrames via the Rust port of bytecode_compiler.ts and are sent over UDP to LLM_OS_ROCLAW_ADDR (default 127.0.0.1:4210). 13 opcodes per RoClaw v1.1.",
+  "description": "skillos_robot 6-byte UDP bytecode bridge. Built-in handler — methods compile to BytecodeFrames via the Rust port of bytecode_compiler.ts and are sent over UDP to LLM_OS_ROCLAW_ADDR (default 127.0.0.1:4210). 13 opcodes per skillos_robot v1.1.",
   "allowed_opcodes": ["call"],
   "preferred_tier": "local",
   "methods": {

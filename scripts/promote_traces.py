@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true",
                    help="report counts; write nothing")
     # Cross-project trace support: load YAML-frontmatter markdown traces
-    # from skillos/RoClaw in addition to JSONL.
+    # from skillos/skillos_robot in addition to JSONL.
     p.add_argument("--markdown-traces", nargs="*", default=[],
                    help="markdown trace files with YAML frontmatter (globs ok)")
     return p.parse_args()
@@ -148,7 +148,7 @@ def load_traces(patterns: list[str]) -> list[dict]:
 
 
 def load_markdown_traces(patterns: list[str]) -> list[dict]:
-    """Load YAML-frontmatter markdown traces from skillos/RoClaw."""
+    """Load YAML-frontmatter markdown traces from skillos/skillos_robot."""
     paths: list[Path] = []
     for pat in patterns:
         for match in glob.glob(pat):
@@ -181,7 +181,7 @@ def main() -> int:
     traces = load_traces(args.traces)
     print(f"[promote_traces] loaded {len(traces)} JSONL traces", file=sys.stderr)
 
-    # Cross-project: load markdown traces from skillos/RoClaw.
+    # Cross-project: load markdown traces from skillos/skillos_robot.
     if args.markdown_traces:
         md_traces = load_markdown_traces(args.markdown_traces)
         print(f"[promote_traces] loaded {len(md_traces)} markdown traces", file=sys.stderr)

@@ -1,6 +1,6 @@
 //! RoClaw bytecode compiler + UDP transport — Rust port of
-//! `RoClaw/src/2_qwen_cerebellum/bytecode_compiler.ts` and
-//! `RoClaw/src/2_qwen_cerebellum/udp_transmitter.ts`.
+//! `skillos_robot/src/2_qwen_cerebellum/bytecode_compiler.ts` and
+//! `skillos_robot/src/2_qwen_cerebellum/udp_transmitter.ts`.
 //!
 //! 13 opcodes (per the actual RoClaw source — the design doc's "14 with ACK"
 //! claim is wrong; current `Opcode` const has 13 entries, no ACK). 6-byte
