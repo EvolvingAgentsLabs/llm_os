@@ -19,30 +19,33 @@ flowchart LR
         CPU[CPU instruction set]
         RAM[RAM]
         MMU[MMU / type safety]
-        Swap[Swap]
+        Swap[Swap / paging]
         Ring[Ring 0 / Ring 3]
         SC[Syscall interface]
         Proc[/proc · /sys]
         Mod[Kernel module]
+        VM[Virtual memory]
     end
     subgraph LLM_OS["llm_os side"]
-        ISA["13-opcode ISA<br/>(GBNF tokens)"]
+        ISA["14-opcode ISA<br/>(GBNF tokens)"]
         KV[KV cache]
         GBNF[GBNF grammar<br/>sampler-enforced]
-        Compact[KV compaction<br/>ISA-aware]
-        LB[Logit bias mask]
+        Pager[Deterministic KV pager<br/>anchors + eviction]
+        WASM[WASM sandbox<br/>+ logit bias]
         CALL["&lt;|call|&gt; opcode<br/>+ schema"]
         Trace[/trace · /policy<br/>iod endpoints]
-        Cart["Cartridge<br/>manifest + schemas + handler"]
+        Cart["Cartridge<br/>manifest + schemas + handler.wasm"]
+        GStack[Grammar stack<br/>push/pop sub-grammars]
     end
     CPU -.-> ISA
     RAM -.-> KV
     MMU -.-> GBNF
-    Swap -.-> Compact
-    Ring -.-> LB
+    Swap -.-> Pager
+    Ring -.-> WASM
     SC -.-> CALL
     Proc -.-> Trace
     Mod -.-> Cart
+    VM -.-> GStack
 ```
 
 The strongest claim: GBNF is not "a constraint we apply afterward",
@@ -55,25 +58,27 @@ to the compiler level.
 ```mermaid
 %%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#18181b','primaryTextColor':'#e4e4e7','primaryBorderColor':'#ffffff','lineColor':'#a1a1aa','secondaryColor':'#27272a','background':'#000','mainBkg':'#18181b','clusterBkg':'#000','clusterBorder':'#a1a1aa','edgeLabelBackground':'#000','fontFamily':'ui-monospace, monospace'}}}%%
 flowchart TB
-    subgraph R3["Ring 3 · userland"]
-        Cart[cartridges<br/>cart/system · io · sim · domestic]
+    subgraph R3["Ring 3 · userland (WASM sandbox)"]
+        Cart[cartridges.wasm<br/>cart/system · io · sim · domestic]
     end
     subgraph R2["Ring 2 · iod kernel"]
-        Iod[iod daemon · /dispatch]
+        Iod[iod daemon · dispatch]
         Sched[scheduler · multitask]
     end
     subgraph R1["Ring 1 · ISA enforcement"]
         Gram[grammar/isa.gbnf]
         Cap[capability mask · logit bias]
         Dial[dialect · token compression]
+        GramStack[grammar stack · push/pop]
     end
-    subgraph R0["Ring 0 · KV"]
-        KV[KV cache · 8192 ctx]
-        Swap[swap · ISA-aware compaction]
+    subgraph R0["Ring 0 · KV + Pager"]
+        KV[KV cache · 32768 ctx]
+        Pager[kv_pager.rs · deterministic eviction]
+        Anchors[anchors · system prompt · loops · state]
     end
-    subgraph HW["HW · CPU"]
-        Llama[llama.cpp sampler loop]
-        Boot[bootloader.c]
+    subgraph HW["HW · CPU (in-process)"]
+        Llama[llama.cpp via FFI · sampler.rs]
+        FFI[llama_ffi.rs · C API wrapper]
     end
 
     Cart --> Iod
@@ -81,70 +86,215 @@ flowchart TB
     Sched --> Gram
     Gram --> Cap
     Cap --> Dial
-    Dial --> KV
-    KV --> Swap
-    Swap --> Llama
-    Boot --> Llama
+    Dial --> GramStack
+    GramStack --> KV
+    KV --> Pager
+    Pager --> Anchors
+    Anchors --> Llama
+    Llama --> FFI
 ```
 
 | Ring | Latency budget | Determinism | Purpose |
 |---|---|---|---|
-| **R3** · userland | ms (cartridge-side) | mixed (handler-defined) | syscall implementations |
+| **R3** · userland | ms (cartridge-side) | mixed (handler-defined) | WASM-sandboxed syscall implementations |
 | **R2** · iod kernel | sub-ms | hard | dispatch · schedule |
 | **R1** · ISA | sampler step | **hard** (grammar) | every emitted token validated |
-| **R0** · KV | constant per token | hard | working memory |
-| **HW** · CPU | weights @ ~120 ms/token on Pi 5 | n/a | the LLM itself |
+| **R0** · KV + Pager | constant per token | hard | working memory + deterministic eviction |
+| **HW** · CPU (FFI) | weights @ ~120 ms/token on Pi 5 | n/a | the LLM itself (in-process via FFI) |
 
 The deeper the ring, the harder the determinism. R1 is the sampler-
 level guarantee that the LLM cannot emit a malformed instruction
 sequence.
 
-## The dispatch loop
+## The dispatch loop (v1.0 — in-process)
 
 ```mermaid
 %%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#18181b','primaryTextColor':'#e4e4e7','primaryBorderColor':'#ffffff','lineColor':'#a1a1aa','secondaryColor':'#27272a','background':'#000','mainBkg':'#18181b','actorBkg':'#18181b','actorBorder':'#ffffff','actorTextColor':'#e4e4e7','signalColor':'#a1a1aa','signalTextColor':'#e4e4e7','noteBkgColor':'#27272a','noteTextColor':'#bff7ff','noteBorderColor':'#00d4ff','activationBkgColor':'#ffffff','sequenceNumberColor':'#000','fontFamily':'ui-monospace, monospace'}}}%%
 sequenceDiagram
     participant User
-    participant Iod as iod (/dispatch)
-    participant Llama as llama.cpp
+    participant Iod as iod (dispatch)
+    participant Sampler as sampler.rs
+    participant Grammar as grammar stack
     participant Parser as parser.rs
     participant Cap as capability.rs
-    participant Cart as cartridge handler
-    participant KV as KV cache
+    participant Cart as cartridge (WASM)
+    participant Pager as kv_pager.rs
+    participant KV as KV cache (FFI)
 
-    User->>Iod: POST /dispatch {goal}
+    User->>Iod: dispatch(goal)
     Iod->>Cap: load policy mask
-    Iod->>Llama: prompt + grammar=isa.gbnf
-    loop sampler step (8 Hz on Pi 5)
-        Llama->>Llama: sample next token (GBNF + bias)
-        Llama-->>Parser: token
+    Iod->>Sampler: inject_prompt(boot + goal)
+    Sampler->>KV: tokenize + decode (in-process)
+    loop token generation (8 Hz on Pi 5)
+        Sampler->>Grammar: sample_with_grammar()
+        Sampler->>KV: decode token (direct FFI)
+        Sampler-->>Parser: token piece
         Parser->>Parser: assemble Op event
-        alt Op == &lt;|call|&gt;
+        alt Op == <|call|>
+            Parser->>Grammar: push_grammar(method.gbnf)
+            Note over Grammar: args sub-grammar active
             Parser->>Iod: call(cart.method, args)
             Iod->>Iod: schema validate
-            Iod->>Cart: invoke handler
+            Iod->>Cart: wasm_host.dispatch()
             Cart-->>Iod: result json
-            Iod->>Llama: inject &lt;|result|&gt;…&lt;|/result|&gt;
-        else Op == &lt;|halt|&gt;
+            Iod->>Sampler: inject_result(text)
+            Sampler->>KV: direct KV append (no HTTP)
+            Parser->>Grammar: pop_grammar()
+        else Op == <|halt|>
             Parser->>Iod: program end
-        else Op == &lt;|yield|&gt;
+        else Op == <|yield|>
             Parser->>Iod: scheduler swap point
         end
-        Llama->>KV: append tokens
-        Note over KV: util ≥ 70% ⇒ compact
+        Pager->>KV: check utilization
+        Note over Pager: util >= 70% => compact
+        opt KV utilization > threshold
+            Pager->>Pager: compute eviction range
+            Pager->>KV: kv_cache_seq_rm (direct FFI)
+            Pager->>Sampler: inject ISA state preamble
+        end
     end
     Iod-->>User: trace + final state
 ```
 
-Three things to notice:
-- **The grammar is the contract.** Every token Llama can emit is
-  syntactically legal — invalid ISA sequences are decode-rejected.
-- **The result block is predicted by the grammar.** The sampler knows
-  shape `<|result|>…<|/result|>` will appear next; the daemon
-  injects, the sampler resumes. Neither side is trusted alone.
-- **Compaction may run mid-dispatch.** This is where state corruption
-  lurks if not handled carefully — see §5 and
-  [`NEXT_STEPS.md §2`](NEXT_STEPS.md).
+Key differences from v0.5:
+
+1. **No HTTP boundary.** The sampler drives llama.cpp's decode loop
+   directly via FFI. Stop-and-inject costs < 1 ms instead of 200-400 ms.
+2. **Grammar stack.** On `<|call|>`, push the method's args sub-grammar.
+   On `<|/call|>`, pop back to ISA grammar. Zero-cost grammar switching.
+3. **Deterministic paging.** KV compaction uses positional token eviction
+   with anchors — no LLM summarization, fully deterministic, < 5 ms.
+4. **WASM dispatch.** Cartridges run in wasmtime sandbox with curated
+   host functions. Real Ring 3 isolation.
+
+## In-process inference (Phase 1)
+
+The HTTP boundary between `iod` and `llama-server` is collapsed into a
+single binary via FFI:
+
+```
+Before (v0.5):
+  bootloader.c → fork llama-server (HTTP/SSE) ← iod.rs (HTTP client)
+  Overhead: 200-400 ms per stop-and-inject cycle
+
+After (v1.0):
+  iod (llama_ffi.rs → sampler.rs → direct KV manipulation)
+  Overhead: < 1 ms per stop-and-inject cycle
+```
+
+### Module: `runtime/llama_ffi.rs`
+
+Thin FFI wrapper over llama.cpp's C API. Safe Rust types:
+
+- `LlamaModel` — model loading, tokenization, vocabulary access
+- `LlamaContext` — KV cache, decode, token generation
+
+Feature-gated: `#[cfg(feature = "ffi-inference")]` for real FFI,
+stub implementations when disabled (graceful degradation to legacy mode).
+
+### Module: `runtime/sampler.rs`
+
+In-process token generation replacing the HTTP SSE loop:
+
+- `Sampler::generate_segment()` — emit tokens until opcode boundary
+- `Sampler::inject_result()` — append result tokens to KV (no HTTP)
+- `Sampler::inject_prompt()` — initial boot prompt
+- Grammar stack: `push_grammar()` / `pop_grammar()` for mid-stream swap
+
+Stop markers detect opcode boundaries:
+```rust
+const STOP_MARKERS: &[&str] = &[
+    "<|/call|>", "<|read|>", "<|write|>", "<|wait|>",
+    "<|fault|>", "<|policy|>", "<|halt|>",
+];
+```
+
+## Deterministic KV paging (Phase 2)
+
+Replaces the LLM-summarization compactor with positional token eviction:
+
+### Module: `runtime/kv_pager.rs`
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ KV Cache Layout (token positions)                                │
+│                                                                  │
+│ [SYSTEM PROMPT | ANCHORS... | EVICTABLE WINDOW | RECENT TAIL]    │
+│  ^never evict   ^protected   ^evict oldest     ^never evict     │
+│                                                                  │
+│ Anchors: ISA state preamble, open loop goals, cartridge schemas  │
+│ Recent tail: last N tokens (configurable, default 2048)          │
+│ Evictable: everything between anchors and tail                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Algorithm** (fully deterministic, no LLM involvement):
+
+1. When KV utilization > threshold (default 70%):
+2. Identify **anchor positions** (system prompt, `<|state|>` preamble,
+   active loop headers)
+3. Identify **recent tail** (last N tokens — always preserved)
+4. Compute **eviction window** (between anchors and tail)
+5. Evict oldest portion via `llama_kv_cache_seq_rm()` (direct FFI)
+6. Optionally inject ISA state preamble from `swap::IsaState`
+
+**Properties:**
+- Deterministic: same input → same eviction decisions
+- Fast: < 5 ms (vs LLM-summary: 200+ ms)
+- ISA-aware: preserves loop state, pending results, fork IDs via anchors
+- Configurable: threshold, tail size, eviction ratio
+
+## WASM cartridge sandbox (Phase 3)
+
+### Module: `runtime/wasm_host.rs`
+
+True Ring 3 isolation via wasmtime:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ iod (Ring 0-2)                                           │
+│   ├── dispatch.rs (routes call → WASM instance)          │
+│   └── wasm_host.rs (WasmEngine + host functions)         │
+│                                                          │
+│   ┌─────────────────────────────────────────────┐        │
+│   │ wasmtime (sandboxed execution)              │        │
+│   │   cartridge.wasm                             │        │
+│   │     exports: dispatch(method, args) → result │        │
+│   │     imports: host_log, host_clock, host_kv   │        │
+│   └─────────────────────────────────────────────┘        │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Host functions provided to cartridges
+
+| Function | Purpose | Capability gate |
+|---|---|---|
+| `host_log(level, msg_ptr, msg_len)` | Structured logging | always |
+| `host_clock_ms() -> i64` | Monotonic clock | always |
+| `host_kv_get(key_ptr, key_len, buf_ptr, buf_len) -> i32` | Per-cart KV read | `kv_store` |
+| `host_kv_set(key_ptr, key_len, val_ptr, val_len)` | Per-cart KV write | `kv_store` |
+| `host_kv_del(key_ptr, key_len) -> i32` | Per-cart KV delete | `kv_store` |
+| `host_http_get(url_ptr, url_len, buf_ptr, buf_len) -> i32` | Gated HTTP | `network_outbound` |
+
+No raw filesystem, no process spawning, no environment access.
+
+### Cartridge capabilities
+
+```rust
+pub struct CartridgeCaps {
+    pub network_outbound: bool,   // Can make outbound HTTP
+    pub kv_store: bool,           // Can access per-cart KV store
+    pub max_memory_pages: u32,    // WASM memory limit (64KB/page)
+    pub max_exec_ms: u64,         // Execution timeout
+}
+```
+
+### Transition strategy
+
+In-process handlers (`runtime/handlers.rs`) stay behind the
+`legacy-handlers` feature flag. WASM cartridges are loaded from
+`cart/<domain>/<name>/handler.wasm`. Both paths coexist during
+migration.
 
 ## Cartridge anatomy
 
@@ -154,7 +304,7 @@ flowchart TB
     Manifest["manifest.json<br/>name · methods · preferred_tier · capabilities"]
     Schemas["schemas/*.schema.json<br/>JSON Schema draft-07"]
     Dialect["dialect.gbnf<br/>token-compressed call syntax"]
-    Handler["handler.rs (v0.5)<br/>OR handler.wasm (v1.0)"]
+    Handler["handler.wasm (v1.0)<br/>OR handler.rs behind legacy-handlers"]
 
     Manifest --> Schemas
     Manifest --> Dialect
@@ -171,19 +321,21 @@ cart/system/summarize/
 ├── schemas/
 │   └── run.args.schema.json     # { path: string, max_chars?: int }
 ├── dialect.gbnf                 # optional · adds "S <path>" shorthand
-└── (handler is in runtime/handlers.rs for v0.5; per-cart .wasm in v1.0)
+└── handler.wasm                 # compiled from Rust (wasm32-wasip2)
 ```
 
 When the LLM emits `<|call|>system.summarize {"path":"./README.md"} <|/call|>`:
 
 1. **Parser** assembles the `Op::Call` event.
-2. **Capability** check: is `system.summarize` in the current policy
+2. **Grammar stack** pops back to ISA grammar after `<|/call|>`.
+3. **Capability** check: is `system.summarize` in the current policy
    mask? (yes by default).
-3. **Schema validation**: JSON args validated against
+4. **Schema validation**: JSON args validated against
    `schemas/run.args.schema.json`. Mismatch → `<|fault|>` injected.
-4. **Handler** runs (Rust function in v0.5).
-5. **Result** wrapped in `<|result|>...<|/result|>` and re-injected.
-6. **Sampler** resumes. Grammar predicted this exact shape so no
+5. **WASM dispatch**: `wasm_host.dispatch("summarize", "run", args)`.
+6. **Result** wrapped in `<|result|>...<|/result|>` and injected
+   directly into KV cache via `sampler.inject_result()`.
+7. **Sampler** resumes. Grammar predicted this exact shape so no
    re-priming is needed.
 
 ## KV cache · the RAM model
@@ -191,47 +343,44 @@ When the LLM emits `<|call|>system.summarize {"path":"./README.md"} <|/call|>`:
 ```mermaid
 %%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#18181b','primaryTextColor':'#e4e4e7','primaryBorderColor':'#ffffff','lineColor':'#a1a1aa','secondaryColor':'#27272a','background':'#000','mainBkg':'#18181b','clusterBkg':'#000','clusterBorder':'#a1a1aa','edgeLabelBackground':'#000','fontFamily':'ui-monospace, monospace'}}}%%
 flowchart LR
-    subgraph KV["KV cache · 8192 ctx"]
-        Sys["system prompt<br/>· pinned ·"]
-        Isa["ISA opcodes<br/>· grammar context ·"]
-        Work["working set<br/>tokens since last compact"]
-        Sum["compacted summary<br/>(after compact)"]
-        Free["free"]
+    subgraph KV["KV cache · 32768 ctx"]
+        Sys["system prompt<br/>· pinned anchor ·"]
+        State["ISA state preamble<br/>· anchor ·"]
+        Loops["open loop headers<br/>· anchors ·"]
+        Evict["evictable window<br/>· oldest tokens ·"]
+        Tail["recent tail (2048)<br/>· never evicted ·"]
     end
 
-    Token[new token] --> Work
-    Work -. ≥ 70% util .-> Compactor[swap.rs<br/>ISA-aware]
-    Compactor --> Sum
-    Sum --> Work
+    Token[new token] --> Tail
+    Evict -. util > 70% .-> Pager[kv_pager.rs<br/>deterministic eviction]
+    Pager --> Evict
+    Pager -. updates .-> State
 
     style Sys fill:#ffffff,color:#000
-    style Isa fill:#e4e4e7,color:#000
-    style Work fill:#a1a1aa,color:#000
-    style Sum fill:#52525b,color:#e4e4e7
-    style Free fill:#000,color:#a1a1aa,stroke:#52525b,stroke-dasharray:4 2
+    style State fill:#e4e4e7,color:#000
+    style Loops fill:#d4d4d8,color:#000
+    style Evict fill:#a1a1aa,color:#000
+    style Tail fill:#52525b,color:#e4e4e7
 ```
 
-### compaction (= swap)
+### Compaction (v1.0 — deterministic paging)
 
-When KV utilization crosses 70%, [`runtime/swap.rs`](../runtime/swap.rs)
-asks the model to summarize the older portion of the working set,
-replaces those tokens with the summary, and reinjects.
+When KV utilization crosses the threshold, `kv_pager.rs` executes
+deterministic positional eviction:
 
-**The danger:** if the compactor drops a token sequence that includes
-an unclosed `<|loop|>` or a pending `<|result|>` expectation, the
-GBNF grammar will reject the next emission as malformed. The current
-v0.5 implementation does not yet track this state — it's the
-[`NEXT_STEPS.md §2`](NEXT_STEPS.md) work.
+1. **Anchor identification**: system prompt, `<|state|>` preamble,
+   open loop headers are never evicted.
+2. **Tail preservation**: last N tokens (default 2048) always kept.
+3. **Eviction**: oldest tokens in the evictable window are removed
+   via `llama_kv_cache_seq_rm()` (direct FFI call, < 1 ms).
+4. **State injection**: if ISA state is non-trivial, the pager injects
+   a `<|state|>` preamble so the sampler resumes coherently.
 
-### v1.0 ISA-aware compactor (planned)
+**No LLM involvement.** No summarization. Fully deterministic.
 
-The compactor will preserve:
-- exact current loop depth (the grammar's stack pointer)
-- pending `<|result|>` / `<|ack|>` expectations
-- in-flight subagent fork ids
-
-before dropping any tokens. The summary that replaces older tokens is
-prepended with explicit state markers so the sampler resumes coherently.
+The `swap.rs` module still provides `IsaState` extraction (loop depth,
+pending results, fork IDs) which the pager uses for state preamble
+generation.
 
 ## Capability · the ring model in practice
 
@@ -240,37 +389,30 @@ prepended with explicit state markers so the sampler resumes coherently.
 flowchart TB
     Policy["policy mask<br/>{ allow: [system.*, sim.*],<br/>  deny: [io.roclaw.shutdown] }"]
     Mask[capability.rs<br/>build logit bias]
-    Sampler[llama.cpp sampler]
+    Sampler[sampler.rs · grammar-constrained]
     Daemon[iod dispatch · daemon-side reject]
 
     Policy --> Mask
     Mask --> Sampler
     Sampler --> TokenStream[token stream]
     TokenStream --> Daemon
-    Daemon -- "ok" --> Result[inject result]
+    Daemon -- "ok" --> Result[inject result into KV]
     Daemon -- "denied" --> Reject["inject<br/>&lt;|result|&gt;{error:'access_denied'}&lt;|/result|&gt;"]
 ```
 
 Two layers of enforcement, intentionally redundant:
 
-1. **Logit bias** at the sampler — sets banned-opcode logits to −∞ so
-   the model never tokenizes them.
+1. **Logit bias** at the sampler — sets banned-opcode logits to -inf so
+   the model never tokenizes them. With single-token ISA (Phase 4),
+   this is **exact** (one token = one opcode = perfect banning).
 2. **Daemon-side reject** — even if the bias is bypassed (multi-token
-   merging, bootstrap models with weak token boundaries), the `iod`
-   parser catches forbidden ops and synthesizes an `access_denied`
-   result.
+   merging on bootstrap models), the `iod` parser catches forbidden
+   ops and synthesizes an `access_denied` result.
 
 The redundancy matters because GBNF / logit bias is brittle on
-bootstrap models with imperfect tokenizers. We trust the daemon-side
-reject as the hard fence; the bias is a soft optimization. See
-[`NEXT_STEPS.md §5`](NEXT_STEPS.md).
-
-**Status (v0.5):** [`capability.rs`](../runtime/capability.rs) is now
-**implemented**. It queries `/tokenize` for opcode token IDs and builds
-a `logit_bias` array banning unauthorized opcodes, preferring unique
-constituent tokens to minimize false positives on bootstrap kernels.
-On fine-tuned kernels (post-v0.1) where each opcode is a single token,
-the bias is exact. The daemon-side reject remains the hard fence.
+bootstrap models with imperfect tokenizers. The fine-tuned kernel
+(single-token ISA) makes the bias exact; the daemon-side reject
+remains the hard fence for defense in depth.
 
 ## Dialect · token economy as cycle optimization
 
@@ -281,9 +423,9 @@ losing semantics:
 ```
 verbose                     dialect              tokens saved
 ─────────                   ─────────            ──────────
-{"left":150,"right":150}    F 150 150            7×
-{"angle":45,"speed":80}     R 45 80              6×
-{"action":"stop"}           S                    9×
+{"left":150,"right":150}    F 150 150            7x
+{"angle":45,"speed":80}     R 45 80              6x
+{"action":"stop"}           S                    9x
 ```
 
 Each cartridge can declare a `dialect.gbnf` adding shorthand syntax
@@ -295,9 +437,9 @@ the parser canonicalizes before schema validation.
 ```mermaid
 %%{init: {'theme':'base', 'themeVariables': {'primaryColor':'#18181b','primaryTextColor':'#e4e4e7','primaryBorderColor':'#ffffff','lineColor':'#a1a1aa','secondaryColor':'#27272a','background':'#000','mainBkg':'#18181b','clusterBkg':'#000','clusterBorder':'#a1a1aa','edgeLabelBackground':'#000','fontFamily':'ui-monospace, monospace'}}}%%
 flowchart LR
-    Goal[/dispatch] --> Iod[iod]
+    Goal[dispatch] --> Iod[iod]
     Iod --> Manifest{cart.preferred_tier?}
-    Manifest -- "local" --> Local[llama.cpp · Pi 5]
+    Manifest -- "local" --> Local[sampler.rs · in-process]
     Manifest -- "cloud" --> Sub[subagent.rs]
     Sub --> Cloud[Gemini 2.5 Flash · cloud]
     Local --> Result1[result]
@@ -309,19 +451,32 @@ flowchart LR
 Each cartridge declares `preferred_tier: "local" | "cloud"` in its
 manifest. The subagent path uses the same ISA — the cloud worker
 emits identical opcodes; only the sampler is remote. This means a
-goal that needs heavier planning (e.g. multi-step reasoning over a
-large knowledge base) escalates without a separate code path. See
-[`runtime/cloud.rs`](../runtime/cloud.rs) and
-[`runtime/subagent.rs`](../runtime/subagent.rs).
+goal that needs heavier planning escalates without a separate code path.
 
-**Status (v0.5):** Subagent cartridges are **real**. The `Subagent`
-trait in [`subagent.rs`](../runtime/subagent.rs) defines the
-`LLMProxy`/`CloudProxy` interface. `cart/system/summarize/` is the
-reference subagent — when the LLM emits
-`<|call|>summarize.summarize`, the daemon detects `subagent: true`
-on the manifest and routes through the injected proxy. Cloud creds
-from `LLM_OS_CLOUD_*` env vars. Dynamic WASM-sandboxed subagent
-loading is a v1.0 goal.
+## Single-token ISA (Phase 4)
+
+The fine-tune pipeline ensures all 20 ISA tokens are single-token:
+
+```python
+SINGLE_TOKENS = [
+    "<|read|>",    "<|write|>",   "<|call|>",    "<|/call|>",
+    "<|yield|>",   "<|fork|>",    "<|wait|>",    "<|loop|>",
+    "<|break|>",   "<|halt|>",    "<|think|>",   "<|/think|>",
+    "<|commit|>",  "<|fault|>",   "<|policy|>",  "<|state|>",
+    "<|/state|>",  "<|result|>",  "<|/result|>", "<|ack|>",
+]
+```
+
+Pipeline (`scripts/rebuild_tokenizer.py`):
+1. `patch` — add tokens as special tokens, resize embeddings
+2. `validate` — verify all are single-token
+3. `finetune` — LoRA DPO on promoted traces
+4. `export` — convert to GGUF with quantization
+
+Benefits:
+- Uniform latency (1 token per opcode regardless of model)
+- Exact capability enforcement (one logit to ban = perfect)
+- Reliable grammar switching (single-token boundaries)
 
 ## Cross-cutting invariants
 
@@ -336,138 +491,109 @@ The five non-negotiables, encoded in tests:
 3. **Result injection is grammar-predicted.** The sampler doesn't
    re-prime; it expects the result shape and resumes mid-stream.
 4. **Capability is checked twice** (logit bias + daemon-side reject).
-5. **Cartridge handlers are pure** with respect to KV state. Side
-   effects go through declared schemas; no out-of-band mutation.
+5. **Cartridge handlers are sandboxed** (WASM) with respect to KV state.
+   Side effects go through declared schemas and curated host functions;
+   no out-of-band mutation.
 
 ## File map
 
 ```
 runtime/
-├── bootloader.c            ← C bootstrap; fork llama-server, inject boot prompt
-├── lib.rs                  ← library root
-├── iod_main.rs             ← daemon entry point (CLI: --server --grammar --trace)
+├── lib.rs                  ← library root (all modules registered)
+├── iod_main.rs             ← daemon entry point (CLI: --model --grammar --trace)
 ├── iod.rs                  ← /dispatch /trace /policy + stop-and-inject loop
+│
+├── llama_ffi.rs            ← [Phase 1] Thin FFI wrapper over llama.cpp C API
+├── sampler.rs              ← [Phase 1] In-process token generation + grammar stack
+│
+├── kv_pager.rs             ← [Phase 2] Deterministic KV paging with anchors
+├── swap.rs                 ← ISA-aware state extraction (IsaState) used by pager
+│
+├── wasm_host.rs            ← [Phase 3] wasmtime sandbox + host functions + caps
+│
 ├── parser.rs               ← token stream → Op events (14 opcodes incl. <|state|>)
 ├── dispatch.rs             ← Op::Call → handler routing + schema validation
-├── handlers.rs             ← real cartridge implementations (cooking, electrical, demo)
+├── handlers.rs             ← in-process Rust handlers (legacy, behind feature flag)
 ├── cartridge.rs            ← manifest + schema loading + CartridgeRegistry
-├── capability.rs           ← logit bias via /tokenize + daemon-side reject (v0.5)
+├── capability.rs           ← logit bias via tokenize + daemon-side reject
 ├── dialect.rs              ← per-cart dialect compression (3 built-in dialects)
-├── scheduler.rs            ← wall+token budgets, soft/hard preemption (v0.5)
-├── multitask.rs            ← thread-per-task pool via llama-server id_slot (v0.5)
-├── swap.rs                 ← KV compaction at 70% (ISA-aware planned for v1.0)
-├── subagent.rs             ← Subagent trait + LLMProxy + CloudProxy (v0.5)
-├── cloud.rs                ← OpenAI-compatible HTTP client
+├── scheduler.rs            ← wall+token budgets, soft/hard preemption
+├── multitask.rs            ← thread-per-task pool via KV slot isolation
+├── subagent.rs             ← Subagent trait + LLMProxy + CloudProxy
+├── cloud.rs                ← OpenAI-compatible HTTP client (cloud fallback)
 ├── roclaw.rs               ← roclaw cartridge: args → 6-byte UDP frames
 ├── tool_parser.rs          ← fallback call parser (5 shapes + JSON repair)
-├── schema_to_gbnf.rs       ← JSON Schema → GBNF compiler (v0.1)
+├── schema_to_gbnf.rs       ← JSON Schema → GBNF compiler
 ├── compile_schemas_main.rs ← build-time schema compilation binary
-├── mock_server.rs          ← test-only mock llama-server
-└── tests/                  ← rust integration tests
+├── mock_server.rs          ← test-only mock llama-server (legacy mode)
+└── Cargo.toml              ← v1.0.0 with feature flags
 
 grammar/
-├── isa.gbnf                ← the 13-opcode ISA (GBNF, sampler-enforced)
+├── isa.gbnf                ← the 14-opcode ISA (GBNF, sampler-enforced)
 ├── isa-spec.md             ← semantics + invariants + examples
 └── tests/
     ├── legal/              ← 6 fixtures that must parse
     └── illegal/            ← 6 fixtures that must NOT parse
 
 cart/
-├── system/{summarize,demo}/          ← summarize is a subagent (v0.5)
-├── io/roclaw/                        ← real handler: 13 motor methods → UDP
-├── sim/sim_world/                    ← real handler: 4×1 grid for e2e tests
-└── domestic/{cooking,residential-electrical}/  ← real handlers (v0.1)
+├── system/{summarize,demo}/          ← summarize is a subagent
+├── io/roclaw/                        ← hardware: 13 motor methods → UDP
+├── sim/sim_world/                    ← simulation: 4x1 grid for e2e tests
+└── domestic/{cooking,residential-electrical}/  ← domain cartridges
 
 scripts/
-├── quickstart.sh           ← cold checkout → first task (≤10 min on Pi 5)
+├── quickstart.sh           ← cold checkout → first task
 ├── validate_grammar.sh     ← 12/12 grammar fixture validator
-├── check_tokenizer.sh      ← tokenization parity analysis
-├── rebuild_tokenizer.py    ← add 18 ISA tokens as single tokens
-├── promote_traces.py       ← JSONL traces → DPO triples (self-hosting, v0.5)
+├── check_tokenizer.sh      ← tokenization analysis + --model validation mode
+├── rebuild_tokenizer.py    ← [Phase 4] full ISA fine-tune pipeline
+├── promote_traces.py       ← JSONL traces → DPO triples (self-hosting)
 └── dev.sh                  ← development build shortcuts
 
 image/
 ├── build.sh                ← Buildroot Pi 5 bootable image
 ├── flash.sh                ← flash to SD card
-├── buildroot_defconfig     ← kernel + rootfs config
+├── buildroot_defconfig     ← kernel + rootfs config (bcm2712/aarch64)
+├── genimage.cfg            ← 3-partition layout
 └── overlay/                ← runtime + cart + model in rootfs
+    └── init                ← PID 1 (watchdog + UART + iod)
 ```
 
-## Recent changes (v0.1 → v0.5-rc1)
+## Version history
 
-Shipped in `v0.1-rc1` and `v0.5-rc1` (both 2026-04-25):
+### v1.0 (current)
 
-- **Real cartridge handlers (v0.1).** `cooking`, `residential-electrical`,
-  and `demo` cartridges have real Rust implementations in `handlers.rs`.
-  Cooking emits 7-day menus + shopping lists. Electrical does IEC-60364
-  circuit sizing. Demo does hash + echo.
-- **Per-method GBNF compilation (v0.1).** `schema_to_gbnf.rs` compiles
-  JSON Schema to GBNF sub-grammars. `compile_schemas` binary
-  materializes them on disk. Mid-stream swap deferred to v1.0; v0.5
-  surfaces them in schema-violation error messages.
-- **Dialect framework (v0.1).** `dialect.rs` with 3 built-in dialects:
-  `roclaw-motion-v1`, `roclaw-rotate-v1`, `sim-world-step-v1`.
-  `F 150 150` → `{"left":150,"right":150}` — 2× token compression.
-- **Scheduler (v0.5).** `scheduler.rs` with unified wall + token
-  budgets. Soft preempt at 80% (logged), hard preempt force-injects
-  `<|halt|>status=partial`.
-- **Multi-task (v0.5).** `multitask.rs` spawns N worker threads
-  against one llama-server using `id_slot` for KV-cache isolation.
-  Start server with `--parallel N`.
-- **Capability enforcement (v0.5).** `capability.rs` queries
-  `/tokenize` for opcode token IDs, builds `logit_bias` banning
-  unauthorized opcodes. Prefers unique constituent tokens. See §6.
-- **Subagent cartridges (v0.5).** `subagent.rs` defines the
-  `Subagent` trait. `cart/system/summarize/` is the reference
-  subagent routed through an injected `CloudProxy`. See §8.
-- **Self-hosting trace pipeline (v0.5).** `promote_traces.py`
-  reads JSONL traces, filters successful trajectories, dedupes, emits
-  DPO triples. The *Linux 0.11 moment*: the OS curates its own
-  training data.
-- **Trace collection (v0.1).** `iod --trace <path>` appends one JSONL
-  line per task (goal, prompt, stream, status, step count, carts used).
-- **Fine-tune recipe (v0.1).** `rebuild_tokenizer.py` + detailed
-  recipe in `docs/fine-tune-recipe.md` for DPO with LoRA on the
-  ISA token corpus.
-- **Projection re-baseline (v0.1).** `docs/projection-rebaseline-2026-04-25.md`
-  benchmarked per-syscall token costs and throughput projections.
+- **In-process inference** (Phase 1): FFI to llama.cpp eliminates HTTP boundary.
+  `llama_ffi.rs` + `sampler.rs` drive the decode loop directly.
+- **Deterministic KV paging** (Phase 2): `kv_pager.rs` replaces LLM-summary
+  compaction with positional token eviction + anchors.
+- **WASM cartridge sandbox** (Phase 3): `wasm_host.rs` provides wasmtime-based
+  isolation with curated host functions and capability enforcement.
+- **Single-token ISA** (Phase 4): `rebuild_tokenizer.py` pipeline adds 20 ISA
+  tokens as single-token, enabling exact capability enforcement.
+- **Feature flags**: `ffi-inference`, `legacy-server`, `wasm-sandbox`,
+  `legacy-handlers` for gradual migration.
+- **14th opcode**: `<|state|>` / `<|/state|>` for ISA state serialization.
+- **102 tests passing** across all modules.
 
-## Next steps · v1.0 roadmap
+### v0.5-rc1 (2026-04-25)
 
-Six items stand between v0.5-rc1 and production-ready v1.0.
-Full details in [`NEXT_STEPS.md`](NEXT_STEPS.md).
+- Scheduler with unified wall + token budgets.
+- Multi-task via llama-server `id_slot` pool.
+- Capability enforcement via logit bias.
+- Subagent cartridges with CloudProxy.
+- Self-hosting trace pipeline (`promote_traces.py`).
 
-### priority order
+### v0.1-rc1 (2026-04-25)
 
-| # | Area | Problem | Fix | Crux |
-|---|------|---------|-----|------|
-| §1 | **Grammar** | 3 HTTP requests per syscall for grammar swap | Multi-grammar stack in llama.cpp sampler | User-facing perf (8 Hz target on Pi 5) |
-| §2 | **Compact** | KV compaction drops unclosed `<\|loop\|>` / pending `<\|result\|>` state | ISA-aware compactor + `<\|state\|>` opcode (14th) | Tightest technical crux — silent state corruption |
-| §3 | **Recover** | Schema violations burn context in retry loops | Three-strikes rule + cloud escalation with violation history | 30s → ≤6s resolution |
-| §4 | **Sandbox** | Cartridge handlers run in-process (no real Ring 3) | WASM via `wasmtime` with curated host function table | Security: real ring boundary |
-| §5 | **Caps** | Logit bias brittle on multi-token bootstrap models | Daemon-side `enforce_runtime` as hard fence, bias downgraded to hint | Belt + suspenders |
-| §6 | **Tokens** | Bootstrap opcodes are 1–5 tokens depending on BPE | Single-token fine-tune: 18 ISA tokens added to tokenizer | Uniform latency + reliable bias |
+- Real cartridge handlers (cooking, electrical, demo).
+- Per-method GBNF compilation.
+- Dialect framework with 3 built-in dialects.
+- Trace collection (`iod --trace`).
+- Fine-tune recipe + tokenizer tooling.
 
-### the two cruxes
-
-**§1 (grammar swap)** is the user-facing performance crux. The current
-per-method GBNF design requires ~200–400 ms overhead per syscall. A
-patched llama.cpp sampler with a multi-grammar stack eliminates this
-by switching sub-grammars in-process when `<|call|>` is emitted.
-Target: 8 Hz steady across 100 sequential calls on Pi 5.
-
-**§2 (ISA-aware compactor)** is the technical correctness crux. If the
-compactor drops tokens containing an unclosed `<|loop|>` or a pending
-`<|result|>` expectation, the GBNF state machine rejects the next
-emission. The fix: walk the dropped window, extract ISA state
-(loop depth, pending results, fork IDs), prepend a synthetic
-`<|state|>` preamble to the summary so the sampler resumes coherently.
-
-### explicit non-goals (v1.0 scope)
+## Explicit non-goals (v1.0 scope)
 
 - Multi-process iod federation (v1.5+)
 - Persistent KV across reboots (separate cartridge concern)
 - Distributed cartridges over network (RPC-style, different problem)
 - Custom kernel-mode model from scratch (post-v1.0 research)
-
-Full analysis: [`docs/NEXT_STEPS.md`](NEXT_STEPS.md).
