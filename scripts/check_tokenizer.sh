@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
-# T1 — Tokenizer parity sanity check.
+# T1 — Tokenizer parity sanity check + single-token validation.
 #
-# Pipes each ISA opcode string through `llama-tokenize` against the bundled
-# Qwen 2 and Gemma 4 vocab GGUFs and writes docs/tokenization-report.md.
+# Two modes:
+#   1. Report mode (default): generates docs/tokenization-report.md comparing
+#      token counts across Qwen and Gemma vocab GGUFs.
+#   2. Validate mode (--model <path>): checks that every ISA opcode tokenizes
+#      to exactly 1 token in the given model. Exits non-zero on failure.
+#      This is the CI gate for fine-tuned kernels.
 #
-# Bootstrap-phase opcodes are multi-token sequences (the kernel-fine-tune
-# in Month 2 collapses them to single tokens — see isa-spec.md §5). The
-# point of this check is to (a) record the actual token cost per opcode so
-# design §6.2 throughput math is grounded, and (b) flag any opcode that
-# tokenizes inconsistently across the two target families (which would be
-# a footgun for the bootloader's grammar boot prompt).
+# Usage:
+#   # Generate report (development):
+#   bash scripts/check_tokenizer.sh
+#
+#   # Validate fine-tuned model (CI):
+#   bash scripts/check_tokenizer.sh --model ~/models/qwen-2.5-3b-llmos-v1.gguf
 #
 # Exit codes:
-#   0  — report written.
+#   0  — report written / all tokens pass validation.
+#   1  — validation failed (one or more tokens are multi-token).
 #   2  — tokenize binary missing or vocabs missing.
 
 set -u
@@ -21,7 +26,22 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LLAMA_DIR="$ROOT/../llama.cpp"
 REPORT="$ROOT/docs/tokenization-report.md"
 
-# Find tokenize binary — same discovery rules as validate_grammar.sh.
+# Parse arguments
+VALIDATE_MODEL=""
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --model)
+      VALIDATE_MODEL="$2"
+      shift 2
+      ;;
+    *)
+      echo "Usage: $0 [--model <path-to-gguf>]" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# Find tokenize binary.
 TOKENIZE=""
 if command -v llama-tokenize >/dev/null 2>&1; then
   TOKENIZE="llama-tokenize"
@@ -43,18 +63,7 @@ if [ -z "$TOKENIZE" ]; then
   exit 2
 fi
 
-# Vocab files (bundled in llama.cpp/models/).
-QWEN_VOCAB="$LLAMA_DIR/models/ggml-vocab-qwen2.gguf"
-GEMMA_VOCAB="$LLAMA_DIR/models/ggml-vocab-gemma-4.gguf"
-for v in "$QWEN_VOCAB" "$GEMMA_VOCAB"; do
-  if [ ! -f "$v" ]; then
-    echo "error: missing vocab file: $v" >&2
-    exit 2
-  fi
-done
-
-# The 18 opcode tokens (per isa-spec.md §5). Add new entries here when
-# extending the ISA.
+# The 20 ISA opcode/envelope tokens (v1.0).
 OPCODES=(
   "<|read|>"
   "<|write|>"
@@ -71,21 +80,11 @@ OPCODES=(
   "<|commit|>"
   "<|fault|>"
   "<|policy|>"
+  "<|state|>"
+  "<|/state|>"
   "<|result|>"
   "<|/result|>"
   "<|ack|>"
-)
-
-# Representative full-statement fragments (so the report has a token-cost
-# anchor for "what does a real syscall cost on the wire").
-SAMPLES=(
-  "<|read|>fd=3 len=128"
-  "<|write|>fd=1 {\"msg\":\"ready\"}"
-  "<|call|>roclaw.forward {\"left\":150,\"right\":150} <|/call|>"
-  "<|loop|>goal=navigate_to_kitchen"
-  "<|break|>"
-  "<|halt|>status=success"
-  "<|result|>\"ok\"<|/result|>"
 )
 
 count_tokens() {
@@ -100,52 +99,109 @@ count_tokens() {
   fi
 }
 
-# Build the report.
+# ─── Validation mode ─────────────────────────────────────────────────────────
+
+if [ -n "$VALIDATE_MODEL" ]; then
+  if [ ! -f "$VALIDATE_MODEL" ]; then
+    echo "error: model not found: $VALIDATE_MODEL" >&2
+    exit 2
+  fi
+
+  echo "Validating ISA token encoding in: $VALIDATE_MODEL"
+  echo "Using tokenizer: $(basename "$TOKENIZE")"
+  echo
+  printf "%-18s %-8s %s\n" "Token" "Count" "Status"
+  printf "%-18s %-8s %s\n" "-----" "-----" "------"
+
+  FAILURES=0
+  MAX_VARIANCE=0
+  for op in "${OPCODES[@]}"; do
+    n=$(count_tokens "$VALIDATE_MODEL" "$op")
+    if [ "$n" = "1" ]; then
+      status="OK"
+    elif [ "$n" = "?" ]; then
+      status="ERROR"
+      FAILURES=$((FAILURES + 1))
+    else
+      status="FAIL ($n tokens)"
+      FAILURES=$((FAILURES + 1))
+      if [ "$n" -gt "$MAX_VARIANCE" ] 2>/dev/null; then
+        MAX_VARIANCE="$n"
+      fi
+    fi
+    printf "%-18s %-8s %s\n" "$op" "$n" "$status"
+  done
+
+  echo
+  if [ "$FAILURES" -eq 0 ]; then
+    echo "PASSED: all ${#OPCODES[@]} ISA tokens are single-token."
+    echo "Token variance: 0% (uniform latency achieved)"
+    exit 0
+  else
+    echo "FAILED: $FAILURES/${#OPCODES[@]} tokens are not single-token."
+    if [ "$MAX_VARIANCE" -gt 0 ]; then
+      echo "Max token count: $MAX_VARIANCE (target: 1)"
+    fi
+    exit 1
+  fi
+fi
+
+# ─── Report mode (default) ───────────────────────────────────────────────────
+
+QWEN_VOCAB="$LLAMA_DIR/models/ggml-vocab-qwen2.gguf"
+GEMMA_VOCAB="$LLAMA_DIR/models/ggml-vocab-gemma-4.gguf"
+for v in "$QWEN_VOCAB" "$GEMMA_VOCAB"; do
+  if [ ! -f "$v" ]; then
+    echo "error: missing vocab file: $v" >&2
+    exit 2
+  fi
+done
+
+SAMPLES=(
+  "<|read|>fd=3 len=128"
+  "<|write|>fd=1 {\"msg\":\"ready\"}"
+  "<|call|>roclaw.forward {\"left\":150,\"right\":150} <|/call|>"
+  "<|loop|>goal=navigate_to_kitchen"
+  "<|break|>"
+  "<|halt|>status=success"
+  "<|result|>\"ok\"<|/result|>"
+  "<|state|>{\"loop_depth\":1}<|/state|>"
+)
+
 {
   echo "# ISA Tokenization Report"
   echo
-  echo "*Auto-generated by \`scripts/check_tokenizer.sh\` against bundled vocab GGUFs in \`../llama.cpp/models/\`. Re-run after any opcode-string change.*"
+  echo "*Auto-generated by \`scripts/check_tokenizer.sh\`.*"
   echo
-  echo "Tokenizer binary: \`$(basename "$TOKENIZE")\`."
-  echo "Qwen vocab: \`ggml-vocab-qwen2.gguf\` (Qwen 2.5 / Qwen 3 family share this tokenizer)."
-  echo "Gemma vocab: \`ggml-vocab-gemma-4.gguf\`."
+  echo "## Per-opcode token count (bootstrap kernels)"
   echo
-  echo "## Per-opcode token count"
-  echo
-  echo "| Opcode | Qwen 2/3 | Gemma 4 | Parity |"
-  echo "|---|---:|---:|:---:|"
+  echo "| Opcode | Qwen 2/3 | Gemma 4 | Parity | Target (v1.0) |"
+  echo "|---|---:|---:|:---:|:---:|"
   for op in "${OPCODES[@]}"; do
     qn=$(count_tokens "$QWEN_VOCAB" "$op")
     gn=$(count_tokens "$GEMMA_VOCAB" "$op")
-    if [ "$qn" = "$gn" ]; then parity="✓"; else parity="≠"; fi
-    # Escape pipes inside the opcode for markdown.
-    printf '| `%s` | %s | %s | %s |\n' "${op//|/\\|}" "$qn" "$gn" "$parity"
+    if [ "$qn" = "$gn" ]; then parity="="; else parity="!="; fi
+    printf '| `%s` | %s | %s | %s | 1 |\n' "${op//|/\\|}" "$qn" "$gn" "$parity"
   done
   echo
-  echo "## Per-statement token count (representative syscall shapes)"
+  echo "## Per-statement token count"
   echo
   echo "| Statement | Qwen 2/3 | Gemma 4 |"
   echo "|---|---:|---:|"
   for s in "${SAMPLES[@]}"; do
     qn=$(count_tokens "$QWEN_VOCAB" "$s")
     gn=$(count_tokens "$GEMMA_VOCAB" "$s")
-    # Escape pipes + truncate display if long.
     disp="${s//|/\\|}"
     printf '| `%s` | %s | %s |\n' "$disp" "$qn" "$gn"
   done
   echo
-  echo "## Findings"
+  echo "## Validation"
   echo
-  echo "- **Gemma 4 has \`<think>\` as a native single-token special token.** \`<|think|>\` tokenizes to **1 token** on Gemma 4 vs **5 tokens** on Qwen 2/3. This is a meaningful kernel-selection signal: Gemma 4's reasoning-tag vocab gives the LLM-OS free single-token cost for the most-emitted opcode in the ISA. **Recommendation:** prefer Gemma 4 E2B as the bootstrap kernel where possible; it amortizes the bootstrap-phase multi-token opcode cost on the one opcode that will dominate inner-monologue volume."
-  echo "- **Closing tags are 2–3× more expensive than their opening counterparts** on both kernels (\`<|/call|>\` = 11–12 tokens vs \`<|call|>\` = 4–5; same for \`<|/think|>\`, \`<|/result|>\`). The \`/\` prefix breaks the tokenizer's BPE merges. The Month 2 fine-tune (§5 of \`isa-spec.md\`) recovers this — both opening and closing become single tokens — but for v0.01 boot-prompt design, prefer opcodes that *don't* require explicit close tags where ISA semantics allow it."
-  echo "- **Gemma 4 is consistently ~20% cheaper than Qwen 2/3** across all opcodes (4 tokens vs 5 for the standard openers). Across a typical 50-syscall task on Pi 5, that's ~10% wall-time saved purely from tokenizer choice."
-  echo "- **Typical syscall cost is ~26 tokens** (\`<|call|>roclaw.forward {…} <|/call|>\` = 26–27 tokens). At 8 Hz on Pi 5 this is ~3.3 s per syscall just for framing + args. Single-token opcodes (Month 2 v0.1) drop this to ~10 tokens and ~1.25 s, a 2.6× speedup. The remaining headroom for the design §6.2 \"5–10×\" claim must come from dialect compression (refinement §2.3)."
+  echo '```bash'
+  echo 'bash scripts/check_tokenizer.sh --model path/to/finetuned.gguf'
+  echo '```'
   echo
-  echo "## Notes"
-  echo
-  echo "- Opcode strings are *not* special tokens in either base vocab (except Gemma's \`<think>\`); they tokenize as multi-token sequences. The Month 2 kernel fine-tune adds the 18 special token IDs; see \`isa-spec.md\` §5."
-  echo "- Parity column shows whether Qwen and Gemma produce the same token count for the opcode string. \`≠\` is not a bug per se — it just means the per-syscall throughput math differs across kernels — but the \`<|think|>\` outlier (5 vs 1) is a kernel-selection signal, not a footgun."
-  echo "- These numbers feed design §6.2's \"~8 Hz × multi-token opcodes (≈1–2 syscalls/sec)\" claim. Use them to predict syscall throughput in advance of the bootloader landing."
+  echo "CI gate: exits 0 only if ALL ${#OPCODES[@]} ISA tokens are single-token."
 } > "$REPORT"
 
 echo "wrote $REPORT"
