@@ -22,7 +22,7 @@ flowchart LR
         Swap[Swap / paging]
         Ring[Ring 0 / Ring 3]
         SC[Syscall interface]
-        Proc[/proc · /sys]
+        Proc["/proc · /sys"]
         Mod[Kernel module]
         VM[Virtual memory]
     end
@@ -33,7 +33,7 @@ flowchart LR
         Pager[Deterministic KV pager<br/>anchors + eviction]
         WASM[WASM sandbox<br/>+ logit bias]
         CALL["&lt;|call|&gt; opcode<br/>+ schema"]
-        Trace[/trace · /policy<br/>iod endpoints]
+        Trace["/trace · /policy<br/>iod endpoints"]
         Cart["Cartridge<br/>manifest + schemas + handler.wasm"]
         GStack[Grammar stack<br/>push/pop sub-grammars]
     end
