@@ -10,16 +10,73 @@
 
 ```
   ┌─────────────────────────────────────────────────────────────┐
-  │  llama.cpp     built from source · with --grammar          │
   │  Rust          ≥ 1.75                                      │
   │  Python        ≥ 3.10  (validation scripts only)           │
-  │  GGUF model    qwen-2.5-3b-q4 (default) or compatible      │
+  │                                                             │
+  │  One of:                                                    │
+  │  Ollama        any version (easiest, no build step)        │
+  │  llama.cpp     built from source (full GBNF grammar)       │
   │                                                             │
   │  Optional:                                                  │
   │  GEMINI_API_KEY  for cartridges with preferred_tier=cloud  │
   │  Pi 5            for the 8 Hz reference target             │
   └─────────────────────────────────────────────────────────────┘
 ```
+
+## Ollama backend (quickest path)
+
+No llama.cpp build required. Install [Ollama](https://ollama.com), pull a model, and run:
+
+```bash
+ollama pull qwen3.5:2b
+cd llm_os/runtime && cargo build --release && cd ..
+
+RUST_LOG=info ./runtime/target/release/iod \
+  --ollama --model qwen3.5:2b \
+  --grammar grammar/isa.gbnf --cart cart \
+  --goal "echo hello world" --budget 120 --max-predict 256
+```
+
+Expected output:
+```
+step 1: Think { body: "I need to echo hello world using demo.echo" }
+step 2: Call { cart: "demo", method: "echo", args: {"text": "hello world"} }
+step 3: Write { fd: 1, payload: {"msg": "Echo returned: hello world"} }
+step 4: Halt { status: Success }
+task complete: status=success steps=4
+```
+
+### Ollama CLI flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--ollama` | off | Use Ollama `/api/generate` instead of llama-server |
+| `--model <name>` | — | Ollama model tag (e.g. `qwen3.5:2b`) |
+| `--max-predict <n>` | 128 (Ollama) / 512 (llama-server) | Tokens per generation segment |
+| `--budget <sec>` | 600 | Wall-clock timeout for entire task |
+| `--temperature <f>` | 0.2 | Sampling temperature |
+| `--trace <path>` | — | Append JSONL traces for fine-tuning |
+
+### How Ollama mode works
+
+Ollama does not support GBNF grammar enforcement. The daemon compensates:
+
+1. **Boot prompt** — Includes opcode reference, per-method arg hints (from JSON schemas), and two few-shot ISA examples so the model follows the format through instruction-following.
+2. **`truncate_at_first_call()`** — Each generation segment is cut at the first `<|/call|>`. The daemon dispatches that call, injects the real `<|result|>`, and re-generates. This prevents the model from hallucinating all steps in one shot.
+3. **`strip_daemon_blocks()`** — Removes model-hallucinated `<|result|>` and `<|ack|>` blocks that should be daemon-only.
+4. **Unclosed `<|think|>` repair** — Inserts `<|/think|>` when the model merges think+call without closing the think block.
+5. **Repeat-call detection** — After 3 identical calls, injects an error nudge to break loops.
+6. **`think: false`** — Disables Qwen 3.5 CoT reasoning mode (which produces empty responses).
+7. **`repeat_penalty: 1.3`** — Penalizes token-level repetition within each generation.
+
+### Ollama limitations
+
+- **No GBNF grammar** — the model may emit invalid ISA syntax. The parser catches and reports these.
+- **Stop sequences unreliable** — Ollama reports `done_reason: "stop"` but doesn't halt generation mid-stream. The `truncate_at_first_call()` workaround handles this.
+- **CPU inference is slow** — each segment takes ~30-60s on a laptop with Qwen 3.5 2B. Multi-step tasks with many iterations may hit the wall-clock budget.
+- **Small models loop** — 2B models sometimes repeat calls instead of halting. The repeat-call detection mitigates this, but larger models (4B+) or fine-tuned models will work better.
+
+## llama-server backend (full grammar)
 
 Build llama.cpp first if you haven't:
 

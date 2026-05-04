@@ -48,9 +48,16 @@ struct Args {
     #[arg(long, default_value = "false")]
     ollama: bool,
 
-    /// Model name for Ollama backend (e.g. "qwen2.5:1.5b").
+    /// Model name for Ollama backend (e.g. "qwen3.5:2b").
     #[arg(long, default_value = "")]
     model: String,
+
+    /// Max tokens per generation segment. Lower values force smaller
+    /// segments, giving the daemon more chances to inject results between
+    /// model calls. Default: 512 for llama-server, 128 for Ollama (to
+    /// compensate for unreliable stop sequences).
+    #[arg(long)]
+    max_predict: Option<u32>,
 }
 
 fn main() -> Result<()> {
@@ -71,7 +78,7 @@ fn main() -> Result<()> {
         task_budget: Duration::from_secs(args.budget),
         max_loop_depth: 4,
         temperature: args.temperature,
-        max_predict_per_segment: 512,
+        max_predict_per_segment: args.max_predict.unwrap_or(if args.ollama { 128 } else { 512 }),
         trace_path: args.trace,
         max_tokens_per_task: 100_000,
         slot_id: None,

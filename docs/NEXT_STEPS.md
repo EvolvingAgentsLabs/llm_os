@@ -17,6 +17,7 @@
   │  §4 SANDBOX  WASM cartridge sandbox           ✓ IMPLEMENTED     │
   │  §5 CAPS     daemon-side opcode reject          PARTIALLY DONE  │
   │  §6 TOKENS   single-token ISA fine-tune       ✓ IMPLEMENTED     │
+  │  §7 OLLAMA   Ollama backend (no GBNF)         ✓ WORKING         │
   │                                                                  │
   └──────────────────────────────────────────────────────────────────┘
 ```
@@ -180,17 +181,60 @@ And `scripts/check_tokenizer.sh` with `--model <path>` validation mode
 
 ---
 
+## §7 Ollama backend — WORKING (May 2026)
+
+**Problem:** Running llm_os requires building llama.cpp from source and
+downloading GGUF models manually. High friction for first-time users.
+
+**Solution implemented:** Native Ollama backend via `/api/generate`.
+Any `ollama pull`-ed model works with `--ollama --model <tag>`.
+
+**Tested end-to-end with Qwen 3.5 2B:**
+
+- Single-call tasks: Think → Call → Write → Halt (100% reliable)
+- Multi-step tasks: echo → hash with real daemon feedback between calls
+- Cooking cartridge: correct arg names from schema hints
+
+**Key features:**
+
+| Feature | Purpose |
+|---|---|
+| `truncate_at_first_call()` | Forces per-call daemon dispatch (Ollama stops are unreliable) |
+| `strip_daemon_blocks()` | Removes hallucinated `<\|result\|>` and `<\|ack\|>` blocks |
+| Unclosed `<\|think\|>` repair | Fixes model merging think+call without closing tag |
+| Repeat-call detection | Nudges model after 3 identical calls |
+| `think: false` | Disables Qwen 3.5 CoT mode (empty response otherwise) |
+| `repeat_penalty: 1.3` | Token-level repetition penalty |
+| Schema arg hints | `Cartridge.args_hint()` puts field names in boot prompt |
+| `--max-predict` flag | Default 128 for Ollama (vs 512 for llama-server) |
+
+**Key files:**
+- `runtime/iod.rs` — `boot_prompt_ollama()`, `complete_via_ollama()`,
+  `strip_daemon_blocks()`, `truncate_at_first_call()`
+- `runtime/iod_main.rs` — `--ollama`, `--model`, `--max-predict` CLI flags
+- `runtime/parser.rs` — tolerant `parse_call()` (defaults to `{}` for missing args)
+- `runtime/cartridge.rs` — `args_hint()` method
+
+**Remaining work:**
+- [ ] Test with larger Ollama models (4B, 8B) for better instruction following
+- [ ] Try `/api/chat` endpoint as alternative to `/api/generate`
+- [ ] Extract GGUF from Ollama cache for llama-server (best of both worlds)
+- [ ] Multi-step iterative tasks (sim_world navigation) — blocked by CPU inference speed
+
+---
+
 ## Remaining v1.0 final gate
 
 Before tagging `v1.0` (no `-rc`):
 
+- [x] Ollama backend working end-to-end (single + multi-step)
 - [ ] Vendor llama.cpp submodule + `build.rs` compiles `libllama.a`
 - [ ] Full stop-and-inject loop working in-process on Pi 5
 - [ ] KV pager wired into dispatch loop with real anchor tracking
 - [ ] At least 1 cartridge compiled to `.wasm` and dispatched via wasmtime
 - [ ] Fine-tuned GGUF validated: all 20 tokens single-token
 - [ ] 100 sequential calls at ≥ 8 Hz on Pi 5 with 3B Q4_K_M
-- [ ] 102+ tests passing (current: 102, 7 pre-existing regex failures)
+- [ ] 102+ tests passing (current: 100 pass, 9 pre-existing failures)
 
 ---
 

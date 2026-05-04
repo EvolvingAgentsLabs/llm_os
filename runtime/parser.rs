@@ -238,11 +238,14 @@ fn parse_call(rest: &str) -> Result<Statement, ParseError> {
     })?;
     let cart = &body[..dot];
     let after_dot = &body[dot + 1..];
-    let space = after_dot.find(char::is_whitespace).ok_or_else(|| {
-        ParseError::Malformed(format!("call missing args block: {body}"))
-    })?;
-    let method = &after_dot[..space];
-    let args_s = after_dot[space..].trim();
+    // Tolerate missing args: `cart.method <|/call|>` → default to `{}`.
+    // Models without GBNF grammar enforcement may omit args for no-arg
+    // methods (e.g. `sim_world.observe <|/call|>`).
+    let (method, args_s) = match after_dot.find(char::is_whitespace) {
+        Some(space) => (&after_dot[..space], after_dot[space..].trim()),
+        None => (after_dot.trim(), "{}"),
+    };
+    let args_s = if args_s.is_empty() { "{}" } else { args_s };
     Ok(Statement::Call {
         cart: cart.to_string(),
         method: method.to_string(),
