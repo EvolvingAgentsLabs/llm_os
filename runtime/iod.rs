@@ -126,6 +126,11 @@ struct OllamaRequest {
     prompt: String,
     stream: bool,
     options: OllamaOptions,
+    /// Disable thinking/reasoning mode for models that support it (e.g.
+    /// Qwen 3.5). When true the model spends tokens on internal CoT and
+    /// produces empty `response` fields — useless for ISA generation.
+    /// Always sent as `false` for ISA generation.
+    think: bool,
     /// Stop sequences — generation halts when any of these are emitted.
     /// Used to implement stop-and-inject: model stops at `<|/call|>` etc.
     /// so the daemon can dispatch handlers and inject results.
@@ -137,6 +142,9 @@ struct OllamaRequest {
 struct OllamaOptions {
     num_predict: u32,
     temperature: f64,
+    /// Repetition penalty — penalises tokens that have already appeared.
+    /// Helps prevent small models from looping on the same call.
+    repeat_penalty: f64,
 }
 
 /// Outcome of running one task to completion.
@@ -192,6 +200,11 @@ impl Daemon {
             max_tokens: self.cfg.max_tokens_per_task,
             soft_preempt_ratio: 0.8,
         });
+        // Track the last call signature to detect repetition loops
+        // (common with small models on Ollama without GBNF).
+        let mut last_call_sig: Option<String> = None;
+        let mut repeat_count: u32 = 0;
+        const MAX_REPEATS: u32 = 2;
 
         let outcome = loop {
             // v0.5: scheduler-driven preemption replaces the bare wall-clock
@@ -217,6 +230,20 @@ impl Daemon {
             }
 
             let segment = self.complete_one_segment(&prompt)?;
+            // Ollama stop sequences are unreliable — the model may
+            // hallucinate daemon-injected blocks (<|result|>…<|/result|>
+            // and <|ack|>). Strip them so the parser only sees opcodes
+            // that the model intended to emit.
+            let segment = strip_daemon_blocks(&segment);
+            // Ollama mode: truncate at the first <|call|>…<|/call|> so the
+            // daemon dispatches it and injects the real result before the
+            // model continues. Without this the model hallucinate all steps
+            // in one segment because stop sequences don't fire mid-stream.
+            let segment = if self.cfg.ollama {
+                truncate_at_first_call(&segment)
+            } else {
+                segment
+            };
             log::debug!("segment ({} bytes): {:?}", segment.len(), trim_for_log(&segment));
             sched.account_segment_bytes(segment.len());
             prompt.push_str(&segment);
@@ -240,9 +267,34 @@ impl Daemon {
                 };
                 steps += 1;
                 log::info!("step {steps}: {stmt:?}");
-                if let Statement::Call { cart, .. } = &stmt {
+                if let Statement::Call { cart, method, args } = &stmt {
                     cartridges_used.insert(cart.clone());
+                    // Detect repetition loops: if the same call signature
+                    // repeats MAX_REPEATS times, inject an error and nudge
+                    // the model to write output and halt.
+                    let sig = format!("{cart}.{method}:{args}");
+                    if last_call_sig.as_deref() == Some(&sig) {
+                        repeat_count += 1;
+                        if repeat_count >= MAX_REPEATS {
+                            log::warn!(
+                                "repeat loop detected: {sig} called {} times; nudging model",
+                                repeat_count + 1
+                            );
+                            inject_result(
+                                &mut prompt,
+                                &json!({"error": "repeated call detected — write your output and halt"}),
+                            );
+                            raw_stream.push_str("<|result|>{\"error\":\"repeated call\"}<|/result|>\n");
+                            continue;
+                        }
+                    } else {
+                        last_call_sig = Some(sig);
+                        repeat_count = 0;
+                    }
                 }
+                // Non-call statements (Think, Write, etc.) do NOT reset
+                // repeat tracking — the model often inserts Think blocks
+                // between repeated calls: Think → Call → Think → Call(same).
 
                 match self.handle_statement(&stmt, &mut prompt, &mut local_context)? {
                     StatementOutcome::Halt(s) => {
@@ -530,25 +582,70 @@ impl Daemon {
         }
     }
 
-    /// Enhanced boot prompt for Ollama (no GBNF grammar). Includes few-shot
-    /// ISA examples so the model knows the exact opcode syntax.
+    /// Enhanced boot prompt for Ollama (no GBNF grammar). Includes opcode
+    /// reference, cartridge method listing, and a few-shot example so the
+    /// model follows the exact ISA syntax through instruction-following.
     fn boot_prompt_ollama(&self, user_goal: &str) -> String {
+        // Build per-cartridge method listing from the live registry.
+        let mut cart_listing = String::new();
+        let mut names: Vec<&str> = self.registry.names();
+        names.sort();
+        for name in &names {
+            if let Some(cart) = self.registry.get(name) {
+                for (m, spec) in &cart.manifest.methods {
+                    let hint = cart.args_hint(m).unwrap_or_else(|| "{}".into());
+                    let desc = if spec.description.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — {}", spec.description)
+                    };
+                    cart_listing.push_str(&format!("  {name}.{m} {hint}{desc}\n"));
+                }
+            }
+        }
+
         format!(
-            "You are LLM-OS, a kernel that ONLY outputs ISA opcodes. NEVER output natural language, markdown, or explanations.\n\
+            "You are LLM-OS, a deterministic kernel. Output ONLY ISA opcodes. No prose, no markdown.\n\
+             \n\
+             OPCODES:\n\
+             <|think|>reasoning<|/think|>\n\
+             <|call|>cart.method {{\"key\":\"val\"}} <|/call|>   (ALWAYS include JSON args, use {{}} for no args)\n\
+             <|write|>fd=1 {{\"msg\":\"text\"}}\n\
+             <|loop|>goal=label  ...  <|break|>\n\
+             <|halt|>status=success\n\
              \n\
              RULES:\n\
-             - <|call|> requires closing <|/call|>: <|call|>cart.method {{\"arg\":\"val\"}} <|/call|>\n\
-             - <|write|> takes fd and JSON: <|write|>fd=1 {{\"msg\":\"text\"}}\n\
-             - <|halt|> ends the task: <|halt|>status=success\n\
-             - After you emit <|call|>...<|/call|>, the SYSTEM will inject a <|result|>...<|/result|> block. Do NOT predict the result yourself.\n\
-             - After the system-injected <|result|> block, continue with the next opcode.\n\
-             - NEVER output markdown, code blocks, or natural language.\n\
+             - Every <|call|> MUST have JSON args: <|call|>cart.method {{}} <|/call|>  (use {{}} if no args needed)\n\
+             - After <|call|>...<|/call|>, SYSTEM injects <|result|>...<|/result|>. Do NOT predict results.\n\
+             - After <|write|>, SYSTEM injects <|ack|>. Do NOT predict acks.\n\
              \n\
-             Available cartridges: {cartridges}\n\
+             CARTRIDGES:\n\
+             {cart_listing}\
              \n\
+             EXAMPLE 1 (single call):\n\
+             <|think|>I need to echo a message<|/think|>\n\
+             <|call|>demo.echo {{\"text\":\"hello\"}} <|/call|>\n\
+             <|result|>{{\"text\":\"hello\",\"len\":5}}<|/result|>\n\
+             <|write|>fd=1 {{\"msg\":\"Echo returned: hello\"}}\n\
+             <|ack|>\n\
+             <|halt|>status=success\n\
+             \n\
+             EXAMPLE 2 (multiple calls — always end with write+halt):\n\
+             <|think|>I need to echo then hash<|/think|>\n\
+             <|call|>demo.echo {{\"text\":\"hi\"}} <|/call|>\n\
+             <|result|>{{\"text\":\"hi\",\"len\":2}}<|/result|>\n\
+             <|call|>demo.hash {{\"text\":\"hi\"}} <|/call|>\n\
+             <|result|>{{\"hex\":\"49f68a5c8493ec2c0bf489821c21fc3b\"}}<|/result|>\n\
+             <|write|>fd=1 {{\"msg\":\"hash of hi = 49f68a5c8493ec2c0bf489821c21fc3b\"}}\n\
+             <|ack|>\n\
+             <|halt|>status=success\n\
+             \n\
+             CRITICAL: After completing all calls, you MUST <|write|> then <|halt|>. Never repeat calls.\n\
+             \n\
+             YOUR TASK:\n\
              Goal: {goal}\n\
              Begin:\n",
-            cartridges = self.registry.names().join(", "),
+            cart_listing = cart_listing,
             goal = user_goal,
         )
     }
@@ -624,20 +721,29 @@ impl Daemon {
             options: OllamaOptions {
                 num_predict: self.cfg.max_predict_per_segment,
                 temperature: self.cfg.temperature,
+                repeat_penalty: 1.3,
             },
+            // Disable CoT thinking (Qwen 3.5 etc.) — ISA generation
+            // needs direct opcode output, not internal reasoning.
+            think: false,
             // Stop after opcodes that need daemon response. Ollama
             // includes the stop token in output, so the parser sees
             // the complete opcode. `<|result|>` prevents the model
-            // from self-predicting daemon-injected results.
+            // from self-predicting daemon-injected results. `<|ack|>`
+            // prevents self-predicting write acknowledgements.
             stop: vec![
                 "<|/call|>".into(),
                 "<|result|>".into(),
+                "<|ack|>".into(),
             ],
         };
 
         let url = format!("{}/api/generate", self.cfg.server_url);
+        // Ollama may need to reload the model on first call (~30s) and
+        // generation can be slow on CPU-only machines. Use a generous
+        // timeout to avoid cutting off valid long-running generation.
         let agent = ureq::AgentBuilder::new()
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(300))
             .build();
         let resp = agent
             .post(&url)
@@ -681,6 +787,121 @@ fn inject_result(prompt: &mut String, value: &Value) {
 
 fn inject_ack(prompt: &mut String) {
     prompt.push_str("<|ack|>\n");
+}
+
+/// Strip model-hallucinated daemon blocks from a segment and truncate
+/// after halt statements. Handles two Ollama quirks:
+///
+/// 1. Unreliable stop sequences — model may generate daemon-injected
+///    blocks (`<|result|>…<|/result|>`, `<|ack|>`) that should be
+///    daemon-only.
+/// 2. Runaway generation — model may continue past `<|halt|>status=…`
+///    generating garbage that corrupts parsing.
+///
+/// Processing order: strip daemon blocks first, then truncate at halt.
+fn strip_daemon_blocks(segment: &str) -> String {
+    // Phase 1: strip <|result|>…<|/result|> and <|ack|> blocks.
+    let mut cleaned = String::with_capacity(segment.len());
+    let mut rest = segment;
+    while !rest.is_empty() {
+        // Find the earliest daemon block.
+        let result_pos = rest.find("<|result|>");
+        let ack_pos = rest.find("<|ack|>");
+        let earliest = match (result_pos, ack_pos) {
+            (Some(r), Some(a)) => Some(r.min(a)),
+            (Some(r), None) => Some(r),
+            (None, Some(a)) => Some(a),
+            (None, None) => None,
+        };
+        match earliest {
+            None => {
+                cleaned.push_str(rest);
+                break;
+            }
+            Some(pos) => {
+                cleaned.push_str(&rest[..pos]);
+                if rest[pos..].starts_with("<|result|>") {
+                    if let Some(end) = rest[pos..].find("<|/result|>") {
+                        let skip = pos + end + "<|/result|>".len();
+                        rest = &rest[skip..];
+                        rest = rest.strip_prefix('\n').unwrap_or(rest);
+                    } else {
+                        break; // unclosed — drop remainder
+                    }
+                } else {
+                    // <|ack|>
+                    rest = &rest[pos + "<|ack|>".len()..];
+                    rest = rest.strip_prefix('\n').unwrap_or(rest);
+                }
+            }
+        }
+    }
+
+    // Phase 2: truncate at <|halt|>status=X — nothing after is valid.
+    for status in ["success", "failure", "partial"] {
+        let needle = format!("<|halt|>status={status}");
+        if let Some(pos) = cleaned.find(&needle) {
+            let end = pos + needle.len();
+            cleaned.truncate(end);
+            cleaned.push('\n');
+            log::debug!("truncated segment at <|halt|>status={status}");
+            break;
+        }
+    }
+
+    if cleaned != segment {
+        log::debug!(
+            "cleaned segment: {} → {} bytes",
+            segment.len(),
+            cleaned.len()
+        );
+    }
+    cleaned
+}
+
+/// For Ollama mode: truncate a cleaned segment at the end of the first
+/// `<|call|>…<|/call|>` block. This forces the daemon to dispatch that call,
+/// inject the real result, and re-generate — preventing the model from
+/// hallucinating all subsequent steps in one shot (Ollama stop sequences are
+/// unreliable and don't actually stop mid-stream).
+///
+/// Also handles a common model quirk: the model may emit `<|call|>` inside
+/// an unclosed `<|think|>` block. When detected, inserts `<|/think|>\n`
+/// before the call so the parser can close the think and parse the call.
+///
+/// If no `<|call|>` is found, returns the full segment unchanged.
+fn truncate_at_first_call(segment: &str) -> String {
+    if let Some(call_start) = segment.find("<|call|>") {
+        if let Some(end_offset) = segment[call_start..].find("<|/call|>") {
+            let cut = call_start + end_offset + "<|/call|>".len();
+            let before_call = &segment[..call_start];
+            let call_block = &segment[call_start..cut];
+
+            let mut truncated = String::with_capacity(cut + 20);
+
+            // Check if there's an unclosed <|think|> block before the call.
+            // Count opens vs closes to determine if we're inside a think.
+            let think_opens = before_call.matches("<|think|>").count();
+            let think_closes = before_call.matches("<|/think|>").count();
+            if think_opens > think_closes {
+                // Close the dangling think block before the call.
+                truncated.push_str(before_call);
+                truncated.push_str("<|/think|>\n");
+                truncated.push_str(call_block);
+                log::debug!("inserted <|/think|> before <|call|> (unclosed think block)");
+            } else {
+                truncated.push_str(&segment[..cut]);
+            }
+            truncated.push('\n');
+            log::debug!(
+                "truncated segment at first <|/call|>: {} → {} bytes",
+                segment.len(),
+                truncated.len()
+            );
+            return truncated;
+        }
+    }
+    segment.to_string()
 }
 
 fn trim_for_log(s: &str) -> String {

@@ -100,6 +100,9 @@ pub struct Cartridge {
     pub manifest: Manifest,
     pub root: PathBuf,
     schemas: HashMap<String, JSONSchema>,
+    /// Raw schema JSON per method, for extracting required arg names
+    /// in the Ollama boot prompt (no GBNF to enforce format).
+    raw_schemas: HashMap<String, Value>,
     /// Per-method compiled GBNF, keyed by method name. Empty for methods
     /// whose schema can't be expressed in the v0.1 GBNF subset (those
     /// fall through to runtime validation only).
@@ -116,6 +119,7 @@ impl Cartridge {
         let manifest: Manifest = serde_json::from_str(&std::fs::read_to_string(&manifest_path)?)?;
 
         let mut schemas = HashMap::new();
+        let mut raw_schemas = HashMap::new();
         let mut grammars = HashMap::new();
         for (name, spec) in &manifest.methods {
             let schema_path = dir.join(&spec.args_schema);
@@ -129,6 +133,7 @@ impl Cartridge {
                     reason: format!("{e}"),
                 })?;
             schemas.insert(name.clone(), compiled);
+            raw_schemas.insert(name.clone(), schema_json.clone());
 
             // v0.1: try to compile a GBNF sub-grammar. Falls through silently
             // if the schema uses constructs outside the v0.1 subset; the
@@ -151,6 +156,7 @@ impl Cartridge {
             manifest,
             root: dir.to_path_buf(),
             schemas,
+            raw_schemas,
             grammars,
         })
     }
@@ -168,6 +174,40 @@ impl Cartridge {
 
     pub fn name(&self) -> &str {
         &self.manifest.name
+    }
+
+    /// Returns a compact args hint for a method, e.g. `{household_size: int, dietary_notes?: str}`.
+    /// Used in the Ollama boot prompt so the model knows exact field names.
+    pub fn args_hint(&self, method: &str) -> Option<String> {
+        let schema = self.raw_schemas.get(method)?;
+        let props = schema.get("properties")?.as_object()?;
+        let required: Vec<&str> = schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        let mut parts = Vec::new();
+        for (k, v) in props {
+            let ty = v
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("any");
+            let short_ty = match ty {
+                "integer" => "int",
+                "string" => "str",
+                "number" => "num",
+                "boolean" => "bool",
+                "array" => "arr",
+                "object" => "obj",
+                other => other,
+            };
+            if required.contains(&k.as_str()) {
+                parts.push(format!("{k}:{short_ty}"));
+            } else {
+                parts.push(format!("{k}?:{short_ty}"));
+            }
+        }
+        Some(format!("{{{}}}", parts.join(", ")))
     }
 
     pub fn validate_args(&self, method: &str, args: &Value) -> Result<(), CartridgeError> {
