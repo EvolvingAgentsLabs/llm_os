@@ -1,17 +1,43 @@
 # LLM-OS Model Matrix
 
-Which GGUF to use depends on your mode (dev vs release) and hardware.
+Which model to use depends on your backend (Ollama vs llama-server), mode (dev vs release), and hardware.
 
 ## Model Recommendations
 
-| Model | Params | GGUF (Q4_K_M) | RAM needed | tok/s (laptop) | tok/s (Pi 5) | Use case |
+| Model | Params | Size | RAM needed | tok/s (laptop) | tok/s (Pi 5) | Use case |
 |---|---|---|---|---|---|---|
-| **Qwen2.5-0.5B-Instruct** | 0.5B | ~350 MB | 1 GB | ~50 | ~30 | Dev: fastest iteration, pipeline testing |
-| **Qwen2.5-1.5B-Instruct** | 1.5B | ~900 MB | 2 GB | ~25 | ~15 | Dev: good quality + speed balance |
+| **Qwen2.5-0.5B-Instruct** | 0.5B | ~350 MB | 1 GB | ~50 | ~30 | Dev: fastest iteration (llama-server) |
+| **Qwen2.5-1.5B-Instruct** | 1.5B | ~900 MB | 2 GB | ~25 | ~15 | Dev: good quality + speed (llama-server) |
+| **Qwen 3.5 2B** | 2B | ~2.7 GB | 4 GB | ~5-10 | ~4 | **Ollama: tested end-to-end** |
 | Qwen2.5-3B-Instruct | 3B | ~1.7 GB | 3 GB | ~15 | **~8** | **Release: Pi 5 sweet spot** |
 | Gemma-4-E2B | 3B | ~1.8 GB | 3 GB | ~14 | ~8 | Release: alternative to Qwen 3B |
 | Qwen3-4B | 4B | ~2.5 GB | 4 GB | ~12 | ~5 | Release: best quality that fits |
 | Qwen2.5-7B-Instruct | 7B | ~4.1 GB | 6 GB | ~8 | ~2-3 | Release: Pi 5 ceiling (tight) |
+
+## Ollama Models (no GBNF, instruction-following only)
+
+**Recommendation: Qwen 3.5 2B** — tested and working end-to-end with the Ollama backend.
+
+```bash
+ollama pull qwen3.5:2b
+```
+
+Why Qwen 3.5 works for ISA generation without grammar:
+
+1. **Strong instruction following** — the 3.5 series follows structured output formats well, even at 2B parameters.
+2. **256K context** — large enough for boot prompt + multi-step traces.
+3. **`think: false` support** — disables internal CoT reasoning that otherwise produces empty responses.
+
+**Caveats at 2B:**
+- CPU inference is slow (~5-10 tok/s on laptop, ~30-60s per generation segment)
+- Model sometimes loops on repeated calls (mitigated by daemon-side detection)
+- Schema arg names need explicit hints in the boot prompt (provided automatically)
+- Multi-step iterative tasks (3+ calls) may hit wall-clock budget on CPU
+
+**Other Ollama models that should work** (untested):
+- `qwen3.5:4b` — better instruction following, slower
+- `qwen3.5:8b` — best quality, needs GPU for reasonable speed
+- `llama3.2:3b` — Meta's small model, good at structured output
 
 ## Dev Mode: Smallest Viable Model
 
@@ -104,6 +130,30 @@ attention offload.
 best tradeoff between quality and size, and it's what llm_os is tested against.
 
 ## Download Commands
+
+### Ollama (easiest)
+
+```bash
+# Tested and working
+ollama pull qwen3.5:2b
+
+# Larger alternatives (untested with ISA)
+ollama pull qwen3.5:4b
+ollama pull qwen3.5:8b
+```
+
+To extract the GGUF from Ollama for use with llama-server:
+
+```bash
+# Find the model blob
+cat ~/.ollama/models/manifests/registry.ollama.ai/library/qwen3.5/2b \
+  | python3 -c "import sys,json; layers=json.load(sys.stdin)['layers']; print([l['digest'] for l in layers if 'model' in l['mediaType']][0])"
+
+# Symlink to a known path (replace sha256-... with the actual digest)
+ln -s ~/.ollama/models/blobs/sha256-b709d815... ~/models/qwen3.5-2b.gguf
+```
+
+### HuggingFace (GGUF for llama-server)
 
 ```bash
 mkdir -p ~/models

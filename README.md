@@ -13,11 +13,37 @@ cd llm_os
 cargo build --release
 ```
 
-Prerequisites: Rust >= 1.75, a GGUF model (default: Qwen 2.5 3B Q4_K_M).
+Prerequisites: Rust >= 1.75, a GGUF model (default: Qwen 2.5 3B Q4_K_M) or Ollama.
 
 Optional: llama.cpp vendored at `runtime/vendor/llama.cpp` for in-process inference (feature `ffi-inference`).
 
 ## Use
+
+### Ollama (quickest path — no llama.cpp build required)
+
+```bash
+# Install Ollama (https://ollama.com), then:
+ollama pull qwen3.5:2b
+
+cd llm_os/runtime && cargo build --release && cd ..
+
+# Single-call demo
+RUST_LOG=info ./runtime/target/release/iod \
+  --ollama --model qwen3.5:2b \
+  --grammar grammar/isa.gbnf --cart cart \
+  --goal "echo hello world" --budget 120 --max-predict 256
+
+# Multi-step demo (proves stop-and-inject loop)
+RUST_LOG=info ./runtime/target/release/iod \
+  --ollama --model qwen3.5:2b \
+  --grammar grammar/isa.gbnf --cart cart \
+  --goal "Echo 'LLM-OS' using demo.echo, then hash it using demo.hash. Write the results and halt." \
+  --budget 300 --max-predict 256
+```
+
+The Ollama backend does not enforce GBNF grammar at the sampler level — the model follows the ISA format through instruction-following alone. The daemon compensates with segment truncation, hallucination stripping, and repeat-call detection. See [docs/USAGE.md](docs/USAGE.md) for details.
+
+### llama-server (full GBNF grammar enforcement)
 
 ```bash
 # Dev mode — in-process inference (default, no external server)
@@ -43,7 +69,13 @@ bash image/build.sh --model ~/models/qwen-2.5-3b-q4.gguf
 
 ## How it works
 
-The LLM generates a token stream constrained by GBNF grammar. Each token maps to one of 14 opcodes. The I/O daemon (`iod`) drives inference in-process via FFI to llama.cpp, intercepts syscall opcodes, validates arguments against JSON schemas, executes cartridge handlers (WASM-sandboxed or legacy in-process), and injects results directly into the KV cache.
+The LLM generates a token stream following 14 opcodes. The I/O daemon (`iod`) drives inference, intercepts syscall opcodes, validates arguments against JSON schemas, executes cartridge handlers, and injects results back into the prompt. Three inference backends are supported:
+
+| Backend | Grammar | Stop sequences | Best for |
+|---|---|---|---|
+| **Ollama** (`--ollama`) | Instruction-following only | Daemon-side truncation | Quick start, any Ollama model |
+| **llama-server** (legacy) | GBNF at sampler level | SSE streaming stops | Full enforcement, dev |
+| **FFI** (v1.0, feature-gated) | GBNF in-process | Zero-latency | Production, Pi 5 |
 
 ```
 POSIX                    LLM-OS
@@ -63,19 +95,22 @@ Six cartridges mounted: `system/summarize`, `system/demo`, `io/roclaw`, `sim/sim
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  iod (single binary)                                              │
-│    ├── sampler.rs       (in-process token generation + grammar)    │
-│    ├── llama_ffi.rs     (thin C-ABI wrapper over llama.cpp)       │
-│    ├── kv_pager.rs      (deterministic eviction with anchors)     │
-│    ├── wasm_host.rs     (wasmtime cartridge sandbox)              │
-│    ├── dispatch.rs      (opcode → handler routing)                │
-│    ├── parser.rs        (14-opcode ISA state machine)             │
-│    └── capability.rs    (logit bias + daemon-side reject)         │
-│                                                                    │
-│  ┌────────────────────────────────────────────────────┐            │
-│  │  libllama.a (statically linked, feature-gated)     │            │
-│  │    - model load, decode, sample, KV cache ops      │            │
-│  └────────────────────────────────────────────────────┘            │
+│  iod (single binary)                                                │
+│    ├── iod.rs           (dispatch loop + inference backends)          │
+│    ├── dispatch.rs      (opcode → handler routing)                   │
+│    ├── parser.rs        (14-opcode ISA state machine)                │
+│    ├── cartridge.rs     (manifest + schema validation + arg hints)   │
+│    ├── sampler.rs       (in-process grammar stack — v1.0 FFI)        │
+│    ├── kv_pager.rs      (deterministic eviction with anchors)        │
+│    ├── wasm_host.rs     (wasmtime cartridge sandbox)                 │
+│    └── capability.rs    (logit bias + daemon-side reject)            │
+│                                                                       │
+│  ┌────────────────────────────────────────────────────────────┐       │
+│  │  Backends (one active per session):                        │       │
+│  │    Ollama      → /api/generate  (no grammar, easiest)      │       │
+│  │    llama-server → /v1/completions (GBNF grammar, SSE)      │       │
+│  │    libllama.a   → FFI in-process (feature-gated, v1.0)     │       │
+│  └────────────────────────────────────────────────────────────┘       │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -113,7 +148,8 @@ The runtime works with any GGUF model. For optimal performance with the ISA:
 | Model | Size | Speed (Pi 5) | Notes |
 |---|---|---|---|
 | Qwen 2.5 0.5B Q4_K_M | ~350 MB | ~15 tok/s | Dev/testing only |
-| Qwen 2.5 3B Q4_K_M | ~1.7 GB | ~8 tok/s | Release sweet spot |
+| **Qwen 3.5 2B** (Ollama) | ~2.7 GB | ~5 tok/s | **Tested end-to-end with Ollama backend** |
+| Qwen 2.5 3B Q4_K_M | ~1.7 GB | ~8 tok/s | Release sweet spot (llama-server) |
 | Qwen 2.5 7B Q4_K_M | ~4.1 GB | ~2-3 tok/s | Max quality ceiling |
 
 For best results, fine-tune with `scripts/rebuild_tokenizer.py` to ensure all 20 ISA tokens are single-token (uniform latency, exact capability enforcement).
