@@ -1,14 +1,3 @@
-# Build artifacts
-build/
-target/
-*.o
-*.obj
-*.a
-*.so
-*.dylib
-*.dll
-*.exe
-
 # Editor / OS
 .DS_Store
 .vscode/
@@ -16,28 +5,11 @@ target/
 *.swp
 *.swo
 
-# Python (for scripts/)
-__pycache__/
-*.pyc
-.venv/
-.env
-
 # Model files (never commit — can be GBs)
 *.gguf
 *.safetensors
 *.bin
 
-# Local test runs
-scripts/tmp/
-llama.cpp/
-
-# Image build artifacts (release mode)
-image/buildroot-*/
-image/buildroot-build/
-image/output/
-image/overlay/usr/bin/llama-server
-image/overlay/usr/bin/bootloader
-image/overlay/usr/bin/iod
-image/overlay/etc/isa.gbnf
-image/overlay/etc/cart/
-image/overlay/etc/wpa_supplicant.conf
+# Local serve
+__pycache__/
+*.pyc
