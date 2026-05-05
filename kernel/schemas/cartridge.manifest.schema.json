@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/EvolvingAgentsLabs/llm_os/kernel/schemas/cartridge.manifest.schema.json",
+  "title": "LLM-OS cartridge manifest",
+  "type": "object",
+  "required": ["name", "methods"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$",
+      "description": "Cartridge identifier. Used as the prefix in <|call|>name.method <|/call|>."
+    },
+    "version": { "type": "string" },
+    "description": { "type": "string" },
+    "methods": {
+      "type": "object",
+      "minProperties": 1,
+      "patternProperties": {
+        "^[a-z][a-z0-9_-]*$": {
+          "type": "object",
+          "required": ["opcodes"],
+          "additionalProperties": false,
+          "properties": {
+            "summary": { "type": "string" },
+            "args_schema": { "type": "string", "description": "Path to JSON Schema for method args (informational; trie enforces enumerated opcodes)." },
+            "opcodes": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Complete opcode string the LLM may emit. Must match the form '<|call|>NAME.METHOD <args>\\n<|/call|>\\n' for the trie to route correctly."
+              }
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "halt": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Optional override for halt opcodes. Defaults to [success/failure/partial] if omitted."
+    }
+  }
+}

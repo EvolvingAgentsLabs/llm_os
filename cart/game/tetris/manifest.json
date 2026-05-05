@@ -1,12 +1,38 @@
 {
   "name": "tetris",
   "version": "0.1.0",
-  "description": "Turn-based Tetris. The LLM is the player: observe the board, choose moves, clear lines. Built-in handler.",
-  "allowed_opcodes": ["call"],
+  "description": "Turn-based Tetris. The LLM is the player: observe the board, choose moves, clear lines.",
   "preferred_tier": "local",
   "methods": {
-    "move":    { "args_schema": "schemas/move.args.schema.json",  "description": "Execute an action: left, right, down, rotate, or drop. Returns updated board state." },
-    "observe": { "args_schema": "schemas/empty.args.schema.json", "description": "Return current board state without advancing the game." },
-    "reset":   { "args_schema": "schemas/empty.args.schema.json", "description": "Reset to a fresh game." }
-  }
+    "move": {
+      "summary": "Execute an action: left, right, down, rotate, or drop. Returns updated board state.",
+      "args_schema": "schemas/move.args.schema.json",
+      "opcodes": [
+        "<|call|>tetris.move {\"action\":\"left\"}<|/call|>\n",
+        "<|call|>tetris.move {\"action\":\"right\"}<|/call|>\n",
+        "<|call|>tetris.move {\"action\":\"down\"}<|/call|>\n",
+        "<|call|>tetris.move {\"action\":\"rotate\"}<|/call|>\n",
+        "<|call|>tetris.move {\"action\":\"drop\"}<|/call|>\n"
+      ]
+    },
+    "observe": {
+      "summary": "Return current board state without advancing the game.",
+      "args_schema": "schemas/empty.args.schema.json",
+      "opcodes": [
+        "<|call|>tetris.observe {}<|/call|>\n"
+      ]
+    },
+    "reset": {
+      "summary": "Reset to a fresh game.",
+      "args_schema": "schemas/empty.args.schema.json",
+      "opcodes": [
+        "<|call|>tetris.reset {}<|/call|>\n"
+      ]
+    }
+  },
+  "halt": [
+    "<|halt|>status=success\n",
+    "<|halt|>status=failure\n",
+    "<|halt|>status=partial\n"
+  ]
 }

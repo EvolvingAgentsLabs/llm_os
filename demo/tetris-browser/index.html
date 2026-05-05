@@ -103,6 +103,7 @@
 
 <script type="module">
 import { Wllama } from 'https://cdn.jsdelivr.net/npm/@wllama/wllama@2.4.0/esm/index.js';
+import { Cartridge, Sampler, parseOpcode, formatResult } from '../../kernel/index.js';
 
 // ── Tetris Game Engine (JS port of runtime/tetris.rs) ─────────────
 
@@ -391,103 +392,16 @@ function compileResult(state, stepCount) {
 // cartridge dispatch. Does NOT know about Tetris strategy.
 // ══════════════════════════════════════════════════════════════════
 
-// ── Token-Trie Grammar Engine ────────────────────────────────────
-// Workaround for wllama bug #168: grammar state machine doesn't advance.
-// Instead of text-matching (which fails because getVocab() returns empty
-// bytes for special tokens), we pre-tokenize all valid opcodes and build
-// a trie of token-ID sequences. At each step we look up valid next token
-// IDs directly — no text decoding needed.
+// ── Token-trie + sampler ─────────────────────────────────────────
+// Grammar enforcement, KV management, and dispatch parsing all live in
+// ../../kernel/. The cartridge manifest lives in cart/game/tetris/. We
+// load it at startup and let the kernel build the trie against the
+// active model's tokenizer.
 
-const OPCODE_STRINGS = [
-  '<|call|>tetris.move {"action":"left"}<|/call|>\n',
-  '<|call|>tetris.move {"action":"right"}<|/call|>\n',
-  '<|call|>tetris.move {"action":"down"}<|/call|>\n',
-  '<|call|>tetris.move {"action":"rotate"}<|/call|>\n',
-  '<|call|>tetris.move {"action":"drop"}<|/call|>\n',
-  '<|call|>tetris.observe {}<|/call|>\n',
-  '<|call|>tetris.reset {}<|/call|>\n',
-  '<|halt|>status=success\n',
-  '<|halt|>status=failure\n',
-  '<|halt|>status=partial\n',
-];
+let cartridge = null;
+let sampler = null;
 
-// A trie node: children maps token_id -> child TrieNode
-class TrieNode {
-  constructor() {
-    this.children = new Map(); // token_id -> TrieNode
-    this.isEnd = false;
-    this.opcodeIndex = -1; // which opcode this completes
-  }
-}
-
-class TokenTrie {
-  constructor() {
-    this.root = new TrieNode();
-    this.sequences = []; // array of { tokens: number[], opcode: string }
-  }
-
-  // Insert a token sequence into the trie
-  insert(tokens, opcodeIndex) {
-    let node = this.root;
-    for (const tok of tokens) {
-      if (!node.children.has(tok)) {
-        node.children.set(tok, new TrieNode());
-      }
-      node = node.children.get(tok);
-    }
-    node.isEnd = true;
-    node.opcodeIndex = opcodeIndex;
-    this.sequences.push({ tokens, opcodeIndex });
-  }
-
-  // Get valid next token IDs given the tokens generated so far.
-  // allowedSet: optional Set of opcode indices to restrict to.
-  getValidNextTokens(generatedTokens, allowedSet = null) {
-    let node = this.root;
-    for (const tok of generatedTokens) {
-      if (!node.children.has(tok)) return new Set();
-      node = node.children.get(tok);
-    }
-    if (!allowedSet) return new Set(node.children.keys());
-    // Filter: only include children that lead to an allowed opcode
-    const result = new Set();
-    for (const [tokId, child] of node.children) {
-      if (this._leadsToAllowed(child, allowedSet)) result.add(tokId);
-    }
-    return result;
-  }
-
-  // Check if a node (or any descendant) leads to a complete opcode in allowedSet
-  _leadsToAllowed(node, allowedSet) {
-    if (node.isEnd && allowedSet.has(node.opcodeIndex)) return true;
-    for (const child of node.children.values()) {
-      if (this._leadsToAllowed(child, allowedSet)) return true;
-    }
-    return false;
-  }
-
-  // Check if the generated sequence is a complete opcode
-  isComplete(generatedTokens) {
-    let node = this.root;
-    for (const tok of generatedTokens) {
-      if (!node.children.has(tok)) return false;
-      node = node.children.get(tok);
-    }
-    return node.isEnd;
-  }
-
-  getOpcodeIndex(generatedTokens) {
-    let node = this.root;
-    for (const tok of generatedTokens) {
-      if (!node.children.has(tok)) return -1;
-      node = node.children.get(tok);
-    }
-    return node.opcodeIndex;
-  }
-}
-
-// Built after model loads — needs wllama.tokenize()
-let tokenTrie = null;
+const TETRIS_MANIFEST_URL = '../../cart/game/tetris/manifest.json';
 
 // ── WASM config ──────────────────────────────────────────────────
 
@@ -499,13 +413,13 @@ const CONFIG_PATHS = {
 
 // ── Model config ─────────────────────────────────────────────────
 // Single hardcoded model. LFM 2.5's tokenizer treats <|call|>, <|halt|>
-// etc. as singletons so the token-trie grammar (built by tokenizing the
-// OPCODE_STRINGS at load time) lines up with what the model emits in
-// top-K logits. Other tokenizers (Qwen, Gemma) tokenize these as
-// multi-token sequences and the trie's valid-next set rarely intersects
-// the top-K, forcing a fallback to deterministic-but-non-strategic
-// picks. To add a model, also widen getLogits() handling in
-// generateConstrained().
+// etc. as singletons so the kernel's token-trie (built by tokenizing
+// the cartridge manifest's opcode strings at load time) lines up with
+// what the model emits in top-K logits. Other tokenizers (Qwen, Gemma)
+// tokenize these as multi-token sequences and the trie's valid-next set
+// rarely intersects the top-K, forcing a fallback to deterministic-but-
+// non-strategic picks. To add a model, widen the logit handling in
+// kernel/sampler.js first.
 
 const MODEL_REPO = 'LiquidAI/LFM2.5-350M-GGUF';
 const MODEL_FILE = 'LFM2.5-350M-Q4_K_M.gguf';
@@ -626,21 +540,19 @@ $('btnLoad').onclick = async () => {
       },
     });
 
+    setStatus('Loading tetris cartridge manifest...');
+    const manifest = await fetch(TETRIS_MANIFEST_URL).then(r => r.json());
+    cartridge = new Cartridge(manifest);
+
     setStatus('Building token trie for grammar enforcement...');
+    await cartridge.build(s => wllama.tokenize(s));
+    sampler = new Sampler(wllama, cartridge.trie, { temp: 0.5, top_k: 0, top_p: 1.0 });
 
-    // Pre-tokenize all valid opcodes and build a trie of token sequences
-    tokenTrie = new TokenTrie();
-    for (let i = 0; i < OPCODE_STRINGS.length; i++) {
-      const tokens = await wllama.tokenize(OPCODE_STRINGS[i]);
-      tokenTrie.insert(tokens, i);
-      console.log(`[trie] opcode ${i}: "${OPCODE_STRINGS[i].trim()}" → [${tokens.join(',')}] (${tokens.length} tokens)`);
+    for (const op of cartridge.trie.opcodes) {
+      console.log(`[trie] opcode ${op.opcodeIndex}: "${op.string.trim()}" → [${op.tokens.join(',')}] (${op.tokens.length} tokens, label=${op.label})`);
     }
-
-    // Log trie root: how many unique first tokens
-    const rootTokens = tokenTrie.root.children;
+    const rootTokens = cartridge.trie.root.children;
     console.log(`[trie] root has ${rootTokens.size} first tokens: [${[...rootTokens.keys()].join(', ')}]`);
-
-    // Detokenize each first token to see what they represent
     const _dec = new TextDecoder();
     for (const [tokId] of rootTokens) {
       const bytes = await wllama.detokenize([tokId]);
@@ -661,7 +573,7 @@ $('btnLoad').onclick = async () => {
 
     appendTrace('result', '--- Model loaded: ' + MODEL_REPO + ' ---');
     appendTrace('result', `--- crossOriginIsolated: ${crossOriginIsolated}, threads: ${navigator.hardwareConcurrency || '?'} ---`);
-    appendTrace('result', `--- trie: ${OPCODE_STRINGS.length} opcodes, ${rootTokens.size} first tokens, token-level grammar ---`);
+    appendTrace('result', `--- cartridge: ${cartridge.name}@${cartridge.version}, ${cartridge.trie.size()} opcodes, ${rootTokens.size} first tokens ---`);
 
   } catch (err) {
     const msg = err.message || String(err);
@@ -679,124 +591,24 @@ $('btnLoad').onclick = async () => {
 };
 
 // ── Token-trie constrained generation ────────────────────────────
-// Instead of text-matching, we use token IDs directly:
-// 1. Get logits for all vocab tokens
-// 2. Look up valid next token IDs from the pre-built trie
-// 3. Pick the highest-probability valid token
-// 4. Feed it back to the model
+// Thin shim around kernel/sampler.js — translates phase control into
+// allowed-opcode sets and surfaces fallback-rate diagnostics.
 
-// KV cache state — track what's already decoded to avoid re-processing
-let kvCacheLen = 0; // number of tokens already in the KV cache
-let allPromptTokens = []; // full token history for reference
-
-// allowedOpcodes: Set of opcode indices to allow (null = all)
-async function generateConstrained(maxTokens = 100, allowedOpcodes = null) {
-  // Initialize sampling WITHOUT grammar (we enforce grammar ourselves)
-  await wllama.samplingInit({ temp: 0.5, top_k: 0, top_p: 1.0 });
-
-  // Tokenize the full prompt
-  const promptTokens = await wllama.tokenize(prompt);
-
-  // Only decode tokens that are NEW (not already in KV cache)
-  const newTokens = promptTokens.slice(kvCacheLen);
-
-  if (newTokens.length > 0) {
-    // Check if we'll exceed context window (4096 - room for generation)
-    const totalNeeded = kvCacheLen + newTokens.length + maxTokens;
-    if (totalNeeded > 3800) {
-      // Sliding window: reset KV cache, keep only system+goal + last result
-      console.log(`[kv] context near full (${kvCacheLen}+${newTokens.length}), resetting with sliding window`);
-      await wllama.kvClear();
-      kvCacheLen = 0;
-      // Re-decode full current prompt (already trimmed by doStep)
-      setStatus('Processing prompt (cache reset)...');
-      await wllama.decode(promptTokens, {});
-      kvCacheLen = promptTokens.length;
-    } else {
-      setStatus(`Processing ${newTokens.length} new tokens...`);
-      await wllama.decode(newTokens, {});
-      kvCacheLen = promptTokens.length;
-    }
-  } else {
-    setStatus('Generating (cached)...');
+async function generateConstrained(maxTokens = 200, allowedOpcodes = null) {
+  setStatus('Generating...');
+  const r = await sampler.generate(prompt, {
+    maxTokens,
+    allowedOpcodes,
+    onProgress: ({ tokenCount }) => setStatus(`Generating... ${tokenCount} tok`),
+  });
+  if (r.fellBackSteps > 0) {
+    console.warn(`[sampler] ${r.fellBackSteps}/${r.tokens.length} steps used first-valid fallback (top-K miss)`);
   }
-
-  const generatedTokens = []; // token IDs generated so far (within one opcode)
-  let tokenCount = 0;
-
-  for (let step = 0; step < maxTokens; step++) {
-    // Get valid next tokens from the trie (filtered by allowed opcodes)
-    const validSet = tokenTrie.getValidNextTokens(generatedTokens, allowedOpcodes);
-
-    if (validSet.size === 0) {
-      // Check if we completed an opcode
-      if (tokenTrie.isComplete(generatedTokens)) {
-        console.log(`[trie] opcode complete in ${tokenCount} tokens`);
-        break;
-      }
-      console.warn('[trie] no valid continuations. Generated tokens:', generatedTokens);
-      appendTrace('error', `[trie] stuck after ${tokenCount} tokens, no valid next token`);
-      break;
-    }
-
-    // Get logits — only need the valid tokens, but getLogits returns top-K.
-    // Use getLogits(-1) to get ALL, then filter by our valid set.
-    const logits = await wllama.getLogits(-1);
-
-    // Debug on first step
-    if (step === 0) {
-      const _d = new TextDecoder();
-      console.log(`[trie] step 0: ${validSet.size} valid next tokens, ${logits.length} logit entries`);
-      for (const tokId of [...validSet].slice(0, 10)) {
-        const bytes = await wllama.detokenize([tokId]);
-        const entry = logits.find(e => e.token === tokId);
-        console.log(`  valid tok=${tokId} text=${JSON.stringify(_d.decode(bytes))} p=${entry?.p?.toFixed(6) ?? 'NOT_IN_LOGITS'}`);
-      }
-    }
-
-    // Find highest-probability token among valid set
-    let bestToken = -1;
-    let bestProb = -1;
-
-    for (const entry of logits) {
-      if (validSet.has(entry.token) && entry.p > bestProb) {
-        bestProb = entry.p;
-        bestToken = entry.token;
-      }
-    }
-
-    // If no valid token found in logits, pick any valid token (logits might be truncated)
-    if (bestToken < 0) {
-      // getLogits might not contain our valid tokens. Fall back to first valid.
-      bestToken = [...validSet][0];
-      console.warn(`[trie] step ${step}: valid tokens not in logits, falling back to tok=${bestToken}`);
-    }
-
-    generatedTokens.push(bestToken);
-    tokenCount++;
-
-    setStatus(`Generating... ${tokenCount} tok`);
-
-    // Check if we've completed a valid opcode
-    if (tokenTrie.isComplete(generatedTokens)) {
-      console.log(`[trie] opcode complete in ${tokenCount} tokens`);
-      break;
-    }
-
-    // Feed token to model for next step
-    await wllama.samplingAccept([bestToken]);
-    await wllama.decode([bestToken], {});
+  if (r.stalled) {
+    console.warn('[sampler] generation stalled — no valid next token');
   }
-
-  // Update KV cache length to include generated tokens
-  kvCacheLen += generatedTokens.length;
-
-  // Detokenize the complete output (returns Uint8Array, must decode to string)
-  if (generatedTokens.length === 0) return '';
-  const outputBytes = await wllama.detokenize(generatedTokens);
-  const output = new TextDecoder().decode(outputBytes);
-  console.log('[trie] final output:', JSON.stringify(output), `(${tokenCount} tokens, kv=${kvCacheLen})`);
-  return output;
+  console.log(`[sampler] output: ${JSON.stringify(r.text)} (opcode=${r.opcodeIndex}, ${r.tokens.length} tokens)`);
+  return r.text;
 }
 
 // ── ISA step loop ────────────────────────────────────────────────
@@ -810,17 +622,15 @@ async function doStep() {
   try {
     const t0 = performance.now();
 
-    // Opcode indices: 0=left, 1=right, 2=down, 3=rotate, 4=drop, 5=observe, 6=reset, 7-9=halt
-    // Step 0: reset/observe to init
-    // After that: ONLY moves until the board fills up (real Tetris game over)
-    // Halt only allowed when game.gameOver is true (pieces reached the top)
+    // Phase control: which cartridge methods are legal in the current game state.
+    // Resolved by name through the kernel's cartridge index — no hardcoded indices.
     let allowed;
     if (game.gameOver) {
-      allowed = new Set([7, 8, 9]); // game over — must halt
+      allowed = cartridge.haltIndices();
     } else if (stepCount === 0) {
-      allowed = new Set([5, 6]); // observe or reset to init
+      allowed = cartridge.methodIndices('observe', 'reset');
     } else {
-      allowed = new Set([0, 1, 2, 3, 4]); // moves only — play until game over
+      allowed = cartridge.methodIndices('move');
     }
     const output = await generateConstrained(200, allowed);
     const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
@@ -834,26 +644,17 @@ async function doStep() {
       return;
     }
 
-    // Parse think block
-    const thinkMatch = output.match(/<\|think\|>([\s\S]*?)<\|\/think\|>/);
-    if (thinkMatch) {
-      appendTrace('think', `[think] ${thinkMatch[1].trim()}`);
-    }
+    // OS-layer dispatch — single parse, structured result.
+    const op = parseOpcode(output);
+    if (op.think) appendTrace('think', `[think] ${op.think}`);
 
-    // Parse call
-    const callMatch = output.match(/<\|call\|>tetris\.(\w+)\s*([\s\S]*?)\s*<\|\/call\|>/);
-    if (callMatch) {
-      const method = callMatch[1];
-      const argsStr = callMatch[2].trim();
-      let args;
-      try { args = JSON.parse(argsStr); } catch { args = {}; }
+    if (op.type === 'call') {
+      const argsStr = JSON.stringify(op.args);
+      appendTrace('call', `<|call|>${op.cartridge}.${op.method} ${argsStr}<|/call|>`);
 
-      appendTrace('call', `<|call|>tetris.${method} ${argsStr}<|/call|>`);
-
-      game.dispatch(method, args);
-
-      // Simulate gravity: after every LLM move, the piece falls 1 row
-      if (!game.gameOver && method === 'move') {
+      game.dispatch(op.method, op.args);
+      // Gravity: piece falls one row after every LLM move
+      if (!game.gameOver && op.method === 'move') {
         if (!game._tryShift(0, 1)) {
           game._lock(); game._clearLines(); game._spawn();
         }
@@ -861,39 +662,33 @@ async function doStep() {
 
       // PROGRAM LAYER: compile raw state into decision-relevant info
       const compiledState = compileResult(game.state, stepCount);
+      const resultBlock = formatResult(compiledState);
+      appendTrace('result', resultBlock.trim());
 
-      appendTrace('result', `<|result|>${compiledState}<|/result|>`);
-
-      // OS LAYER: inject compiled result into prompt for next step
-      prompt += output + `<|result|>${compiledState}<|/result|>\n`;
+      // OS LAYER: inject compiled result back into prompt for next step
+      prompt += output + resultBlock;
 
       // Sliding window: if prompt is too long, keep system+goal + last result only
       const basePrompt = CHAT_TEMPLATE(SYSTEM_PROMPT, USER_GOAL);
       const promptLen = prompt.length;
       if (promptLen > 6000) {
-        prompt = basePrompt + output + `<|result|>${compiledState}<|/result|>\n`;
+        prompt = basePrompt + output + resultBlock;
         console.log(`[sliding] prompt trimmed from ${promptLen} to ${prompt.length} chars`);
+        sampler.resetKv();
       }
 
       stepCount++;
       renderBoard(game.state);
       setStatus(`Step ${stepCount} done (${elapsed}s, ${output.length} chars)`);
-    }
-
-    // Parse halt
-    const haltMatch = output.match(/<\|halt\|>status=(\w+)/);
-    if (haltMatch) {
+    } else if (op.type === 'halt') {
       prompt += output;
-      appendTrace('halt', `<|halt|>status=${haltMatch[1]}`);
-      setStatus(`Halted: ${haltMatch[1]} (${elapsed}s)`);
+      appendTrace('halt', `<|halt|>status=${op.status}`);
+      setStatus(`Halted: ${op.status} (${elapsed}s)`);
       autoPlaying = false;
       $('btnAuto').textContent = 'Auto Play';
       $('btnStep').disabled = false;
       return;
-    }
-
-    // No call or halt matched
-    if (!callMatch && !haltMatch) {
+    } else {
       appendTrace('error', `[no opcode matched] raw: ${output.slice(0, 200)}`);
       prompt += output;
     }
@@ -926,8 +721,7 @@ $('btnReset').onclick = async () => {
   $('btnAuto').textContent = 'Auto Play';
   game.reset();
   stepCount = 0;
-  kvCacheLen = 0;
-  if (wllama) await wllama.kvClear();
+  if (sampler) await sampler.kvClear();
   prompt = CHAT_TEMPLATE(SYSTEM_PROMPT, USER_GOAL);
   $('trace').innerHTML = '';
   appendTrace('result', '--- Game reset ---');
