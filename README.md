@@ -68,7 +68,6 @@ demo/tetris-browser/   # the entire OS — single self-contained HTML file
 cart/game/tetris/      # cartridge manifest + method specs + JSON schemas
 grammar/isa-spec.md    # 14-opcode ISA reference
 docs/tetris-architecture.md   # OS/Program layer thesis
-docs/legacy/           # historical Rust daemon design + release notes
 ```
 
 ## License
