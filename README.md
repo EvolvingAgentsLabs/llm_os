@@ -13,16 +13,16 @@ Two browser demos, both running on the same kernel + same model. Each downloads 
 **Tetris** — single-loop arcade. The LLM observes the board, decides a move, sees the consequence.
 
 ```bash
-cd demo/tetris-browser && python3 serve.py    # http://localhost:8888
+python demo/tetris-browser/serve.py    # serves at http://localhost:8888/demo/tetris-browser/
 ```
 
 **Scavenger** — multi-step quest. The LLM navigates a grid, finds a red cube, picks it up, delivers it to a blue square. Compiled-state shape (labeled objects with bearings + distances) deliberately mirrors what `skillos_robot`'s SceneGraph emits from a real camera — the same prompt and opcode set transfer to a real-world robot challenge.
 
 ```bash
-cd demo/scavenger-browser && python3 serve.py    # http://localhost:8889
+python demo/scavenger-browser/serve.py    # serves at http://localhost:8889/demo/scavenger-browser/
 ```
 
-Both demos require COOP/COEP headers (the `serve.py` script provides them) so SharedArrayBuffer works. After model download, no network traffic is needed.
+Each `serve.py` chdir's to the repo root before listening so the demos' `../../kernel/...` and `../../cart/...` ESM imports resolve, and sets the COOP/COEP headers SharedArrayBuffer requires. Run from anywhere — the script locates its own repo root. After model download, no network traffic is needed.
 
 ## Architecture
 
