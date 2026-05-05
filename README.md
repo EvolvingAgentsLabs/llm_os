@@ -6,17 +6,23 @@ A 350M-parameter model plays Tetris by emitting grammar-constrained ISA opcodes.
 
 Part of the [Evolving Agents](https://github.com/EvolvingAgentsLabs) ecosystem.
 
-## Demo
+## Demos
+
+Two browser demos, both running on the same kernel + same model. Each downloads ~230 MB on first load (the LiquidAI LFM 2.5 350M weights), then plays entirely offline via [@wllama/wllama](https://github.com/ngxson/wllama).
+
+**Tetris** — single-loop arcade. The LLM observes the board, decides a move, sees the consequence.
 
 ```bash
-git clone https://github.com/EvolvingAgentsLabs/llm_os.git
-cd llm_os/demo/tetris-browser
-python3 serve.py    # COOP/COEP headers required for SharedArrayBuffer
+cd demo/tetris-browser && python3 serve.py    # http://localhost:8888
 ```
 
-Open <http://localhost:8888>, click **Load Model** (downloads ~230 MB once), then **Auto Play**. The model is [LiquidAI LFM 2.5 350M](https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF) at Q4_K_M.
+**Scavenger** — multi-step quest. The LLM navigates a grid, finds a red cube, picks it up, delivers it to a blue square. Compiled-state shape (labeled objects with bearings + distances) deliberately mirrors what `skillos_robot`'s SceneGraph emits from a real camera — the same prompt and opcode set transfer to a real-world robot challenge.
 
-Inference happens entirely in the browser via [@wllama/wllama](https://github.com/ngxson/wllama). Once the model is cached, no network traffic is needed to play.
+```bash
+cd demo/scavenger-browser && python3 serve.py    # http://localhost:8889
+```
+
+Both demos require COOP/COEP headers (the `serve.py` script provides them) so SharedArrayBuffer works. After model download, no network traffic is needed.
 
 ## Architecture
 
@@ -64,8 +70,13 @@ The full 14-opcode ISA spec is in [grammar/isa-spec.md](grammar/isa-spec.md). Th
 ## Repo layout
 
 ```
-demo/tetris-browser/   # the entire OS — single self-contained HTML file
-cart/game/tetris/      # cartridge manifest + method specs + JSON schemas
+kernel/                # reusable JS kernel (token-trie, Sampler, dispatch)
+                       # — embed in any wllama-driven frontend
+demo/tetris-browser/   # arcade demo — single self-contained HTML
+demo/scavenger-browser/# quest demo — same kernel, different cartridge
+cart/game/tetris/      # tetris cartridge manifest + schemas
+cart/game/scavenger/   # scavenger cartridge manifest + schemas
+cart/system/echo/      # smoke-test cartridge (kernel generalization)
 grammar/isa-spec.md    # 14-opcode ISA reference
 docs/tetris-architecture.md   # OS/Program layer thesis
 ```

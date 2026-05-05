@@ -1,0 +1,44 @@
+{
+  "name": "scavenger",
+  "version": "0.1.0",
+  "description": "Grid-world scavenger hunt. Agent must find a target object, pick it up, and deliver it to a destination — through walls, around pits, with a finite move budget. Mechanics mirror skillos_robot's look-navigate-act loop: same compiled-state shape (labeled objects + bearings + distances), same opcode set, same OS/Program separation. A working LLM-OS demo of Scavenger transfers almost directly to a real-world physical scavenger task with a robot embodiment.",
+  "preferred_tier": "local",
+  "methods": {
+    "move": {
+      "summary": "Move one cell in the given direction. Blocked by walls; ends game on pit.",
+      "args_schema": "schemas/move.args.schema.json",
+      "opcodes": [
+        "<|call|>scavenger.move {\"dir\":\"north\"}<|/call|>\n",
+        "<|call|>scavenger.move {\"dir\":\"south\"}<|/call|>\n",
+        "<|call|>scavenger.move {\"dir\":\"east\"}<|/call|>\n",
+        "<|call|>scavenger.move {\"dir\":\"west\"}<|/call|>\n"
+      ]
+    },
+    "pickup": {
+      "summary": "Pick up the object at the agent's current cell. Fails if cell is empty or agent already carrying something.",
+      "args_schema": "schemas/empty.args.schema.json",
+      "opcodes": [
+        "<|call|>scavenger.pickup {}<|/call|>\n"
+      ]
+    },
+    "drop": {
+      "summary": "Drop the carried object onto the agent's current cell. Fails if not carrying anything.",
+      "args_schema": "schemas/empty.args.schema.json",
+      "opcodes": [
+        "<|call|>scavenger.drop {}<|/call|>\n"
+      ]
+    },
+    "look": {
+      "summary": "Observe surroundings without advancing the move counter. Returns compiled scene state.",
+      "args_schema": "schemas/empty.args.schema.json",
+      "opcodes": [
+        "<|call|>scavenger.look {}<|/call|>\n"
+      ]
+    }
+  },
+  "halt": [
+    "<|halt|>status=success\n",
+    "<|halt|>status=failure\n",
+    "<|halt|>status=partial\n"
+  ]
+}

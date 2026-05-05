@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM-OS Scavenger — Quest in a grid</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'SF Mono', 'Fira Code', monospace; background: #0a0a0a; color: #e0e0e0; padding: 20px; }
+  h1 { font-size: 1.4em; margin-bottom: 4px; color: #00ff88; }
+  .subtitle { color: #666; font-size: 0.85em; margin-bottom: 16px; }
+  .layout { display: flex; gap: 20px; margin-top: 12px; }
+  .left { display: flex; flex-direction: column; gap: 12px; }
+
+  /* Grid */
+  .board-wrap { border: 2px solid #333; padding: 2px; background: #111; display: inline-block; }
+  .board { display: grid; grid-template-columns: repeat(8, 36px); grid-template-rows: repeat(8, 36px); gap: 2px; }
+  .cell { width: 36px; height: 36px; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 1.1em; }
+  .cell.empty { background: #1a1a1a; }
+  .cell.wall { background: #444; color: #888; }
+  .cell.pit { background: #200; color: #f00; }
+  .cell.red_cube { background: #2a0a0a; color: #ff4444; }
+  .cell.blue_square { background: #0a0a2a; color: #4488ff; }
+  .cell.green_cube { background: #0a2a0a; color: #44ff44; }
+  .cell.agent { background: #003322; color: #00ff88; font-weight: bold; outline: 2px solid #00ff88; }
+
+  /* Info panel */
+  .info { min-width: 180px; }
+  .info h3 { color: #00ff88; font-size: 0.9em; margin-bottom: 8px; }
+  .stat { margin-bottom: 6px; font-size: 0.85em; }
+  .stat .label { color: #888; }
+  .stat .val { color: #fff; font-weight: bold; }
+
+  /* Trace panel */
+  .trace-wrap { flex: 1; max-width: 560px; }
+  .trace-wrap h3 { color: #00ff88; font-size: 0.9em; margin-bottom: 8px; }
+  .trace { background: #111; border: 1px solid #333; border-radius: 4px; padding: 10px;
+           height: 480px; overflow-y: auto; font-size: 0.78em; line-height: 1.5; }
+  .trace .think { color: #888; font-style: italic; }
+  .trace .call { color: #00aaff; }
+  .trace .result { color: #666; }
+  .trace .halt { color: #00ff88; font-weight: bold; }
+  .trace .error { color: #ff4444; }
+
+  /* Controls */
+  .controls { margin-top: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button { background: #222; color: #e0e0e0; border: 1px solid #444; padding: 8px 16px;
+           border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 0.85em; }
+  button:hover { background: #333; border-color: #666; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.primary { background: #004422; border-color: #00ff88; color: #00ff88; }
+  .model-info { color: #888; font-size: 0.85em; padding: 6px 10px; border: 1px solid #333;
+                border-radius: 4px; background: #161616; }
+
+  /* Progress */
+  .progress { margin-top: 12px; }
+  .progress-bar { width: 300px; height: 8px; background: #222; border-radius: 4px; overflow: hidden; }
+  .progress-fill { height: 100%; background: #00ff88; transition: width 0.2s; }
+  .progress-text { font-size: 0.78em; color: #888; margin-top: 4px; }
+  #status { font-size: 0.85em; margin-top: 8px; color: #888; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; font-size: 0.78em; margin-top: 8px; color: #888; }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-swatch { width: 14px; height: 14px; border-radius: 2px; display: inline-block; }
+</style>
+</head>
+<body>
+
+<h1>LLM-OS Scavenger</h1>
+<div class="subtitle">A 350M-parameter LLM solves a multi-step quest. Find the red cube, pick it up, deliver to the blue square. Same kernel as Tetris, different cartridge.</div>
+
+<div class="controls">
+  <span class="model-info">Model: LiquidAI LFM 2.5 350M (Q4_K_M, 229MB)</span>
+  <button id="btnLoad" class="primary">Load Model</button>
+  <button id="btnStep" disabled>Step</button>
+  <button id="btnAuto" disabled>Auto Play</button>
+  <button id="btnReset" disabled>Reset</button>
+</div>
+
+<div class="progress" id="progressWrap" style="display:none">
+  <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+  <div class="progress-text" id="progressText">Downloading model...</div>
+</div>
+<div id="status"></div>
+
+<div class="layout">
+  <div class="left">
+    <div class="board-wrap"><div class="board" id="board"></div></div>
+    <div class="legend">
+      <div class="legend-item"><span class="legend-swatch" style="background:#003322;outline:2px solid #00ff88"></span>agent</div>
+      <div class="legend-item"><span class="legend-swatch" style="background:#2a0a0a"></span>red_cube</div>
+      <div class="legend-item"><span class="legend-swatch" style="background:#0a0a2a"></span>blue_square</div>
+      <div class="legend-item"><span class="legend-swatch" style="background:#0a2a0a"></span>green_cube</div>
+      <div class="legend-item"><span class="legend-swatch" style="background:#444"></span>wall</div>
+      <div class="legend-item"><span class="legend-swatch" style="background:#200"></span>pit</div>
+    </div>
+    <div class="info">
+      <h3>Quest</h3>
+      <div class="stat" id="questText">Pick up <span style="color:#ff4444">red_cube</span>, deliver to <span style="color:#4488ff">blue_square</span></div>
+      <h3 style="margin-top:12px">Stats</h3>
+      <div class="stat"><span class="label">Step: </span><span class="val" id="step">0</span></div>
+      <div class="stat"><span class="label">Moves left: </span><span class="val" id="movesLeft">30</span></div>
+      <div class="stat"><span class="label">Carrying: </span><span class="val" id="carrying">—</span></div>
+      <div class="stat"><span class="label">Status: </span><span class="val" id="gameStatus">in progress</span></div>
+    </div>
+  </div>
+  <div class="trace-wrap">
+    <h3>ISA Trace</h3>
+    <div class="trace" id="trace"></div>
+  </div>
+</div>
+
+<script type="module">
+import { Wllama } from 'https://cdn.jsdelivr.net/npm/@wllama/wllama@2.4.0/esm/index.js';
+import { Cartridge, Sampler, parseOpcode, formatResult } from '../../kernel/index.js';
+
+// ── Scavenger Game Engine ─────────────────────────────────────────
+
+const ROWS = 8, COLS = 8;
+const BUDGET = 30;
+const DIRS = { north: [0,-1], south: [0,1], east: [1,0], west: [-1,0] };
+
+// Initial level layout. Coordinates are [x, y] with [0,0] top-left, +y is south.
+const LEVEL = {
+  agent: { x: 3, y: 5 },
+  objects: [
+    { id: 'red_cube',    label: 'red_cube',    x: 5, y: 1, kind: 'item' },
+    { id: 'green_cube',  label: 'green_cube',  x: 6, y: 5, kind: 'item' },  // distractor
+    { id: 'blue_square', label: 'blue_square', x: 2, y: 6, kind: 'destination' },
+  ],
+  walls: [ {x:3, y:3}, {x:4, y:3}, {x:5, y:3}, {x:1, y:1} ],
+  pits:  [ {x:1, y:5} ],
+};
+
+class ScavengerGame {
+  constructor() { this.reset(); }
+
+  reset() {
+    this.agent = { x: LEVEL.agent.x, y: LEVEL.agent.y };
+    this.objects = LEVEL.objects.map(o => ({ ...o }));
+    this.walls = LEVEL.walls.map(w => ({...w}));
+    this.pits  = LEVEL.pits.map(p => ({...p}));
+    this.carrying = null;       // object id, or null
+    this.movesLeft = BUDGET;
+    this.gameOver = false;
+    this.outcome = null;        // 'success' | 'failure' | 'partial' | null
+    this.delivered = false;
+  }
+
+  inBounds(x, y) { return x >= 0 && x < COLS && y >= 0 && y < ROWS; }
+
+  isWall(x, y) { return this.walls.some(w => w.x === x && w.y === y); }
+  isPit(x, y)  { return this.pits.some(p => p.x === x && p.y === y); }
+  objectAt(x, y) { return this.objects.find(o => !o.held && o.x === x && o.y === y); }
+
+  dispatch(method, args) {
+    if (this.gameOver) return { error: 'game over', state: this.serialize() };
+
+    if (method === 'look') return { ok: true };  // no-op, no move cost
+
+    if (method === 'move') {
+      const d = DIRS[args.dir];
+      if (!d) return { error: `unknown dir: ${args.dir}` };
+      const nx = this.agent.x + d[0];
+      const ny = this.agent.y + d[1];
+      if (!this.inBounds(nx, ny)) return { ok: false, blocked: 'edge' };
+      if (this.isWall(nx, ny))   return { ok: false, blocked: 'wall' };
+      this.agent.x = nx; this.agent.y = ny;
+      this.movesLeft--;
+      if (this.isPit(nx, ny)) { this.gameOver = true; this.outcome = 'failure'; return { ok: true, fell: true }; }
+      // Win check: stepping on blue_square while carrying red_cube → success
+      const obj = this.objectAt(nx, ny);
+      if (obj && obj.id === 'blue_square' && this.carrying === 'red_cube') {
+        this.delivered = true;
+        // Drop the cube on the destination automatically.
+        const cube = this.objects.find(o => o.id === 'red_cube');
+        if (cube) { cube.x = nx; cube.y = ny; cube.held = false; }
+        this.carrying = null;
+        this.gameOver = true;
+        this.outcome = 'success';
+        return { ok: true, delivered: true };
+      }
+      if (this.movesLeft <= 0 && !this.gameOver) {
+        this.gameOver = true; this.outcome = 'partial';
+      }
+      return { ok: true };
+    }
+
+    if (method === 'pickup') {
+      if (this.carrying) return { ok: false, reason: 'already_carrying' };
+      const obj = this.objectAt(this.agent.x, this.agent.y);
+      if (!obj) return { ok: false, reason: 'nothing_here' };
+      if (obj.kind !== 'item') return { ok: false, reason: 'not_pickable' };
+      obj.held = true;
+      this.carrying = obj.id;
+      return { ok: true, picked: obj.id };
+    }
+
+    if (method === 'drop') {
+      if (!this.carrying) return { ok: false, reason: 'not_carrying' };
+      const obj = this.objects.find(o => o.id === this.carrying);
+      if (obj) { obj.x = this.agent.x; obj.y = this.agent.y; obj.held = false; }
+      const droppedId = this.carrying;
+      this.carrying = null;
+      return { ok: true, dropped: droppedId };
+    }
+
+    return { error: `unknown method: ${method}` };
+  }
+
+  serialize() {
+    return {
+      agent: { ...this.agent },
+      objects: this.objects.map(o => ({ ...o })),
+      carrying: this.carrying,
+      movesLeft: this.movesLeft,
+      gameOver: this.gameOver,
+      outcome: this.outcome,
+    };
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ── PROGRAM LAYER ────────────────────────────────────────────────
+// Compile raw scene state into ~70 tokens of decision-relevant info.
+// ══════════════════════════════════════════════════════════════════
+
+function bearing(fromX, fromY, toX, toY) {
+  // 8-way compass bearing relative to grid (north = -y).
+  const dx = toX - fromX, dy = toY - fromY;
+  if (dx === 0 && dy === 0) return 'here';
+  const angle = Math.atan2(-dy, dx) * 180 / Math.PI; // 0 = E, 90 = N
+  if (angle >= -22.5 && angle < 22.5)   return 'E';
+  if (angle >=  22.5 && angle < 67.5)   return 'NE';
+  if (angle >=  67.5 && angle < 112.5)  return 'N';
+  if (angle >= 112.5 && angle < 157.5)  return 'NW';
+  if (angle >= 157.5 || angle < -157.5) return 'W';
+  if (angle >= -157.5 && angle < -112.5) return 'SW';
+  if (angle >= -112.5 && angle < -67.5)  return 'S';
+  return 'SE';
+}
+
+function manhattan(a, b) { return Math.abs(a.x - b.x) + Math.abs(a.y - b.y); }
+
+function generateHint(state) {
+  const a = state.agent;
+  if (state.carrying === 'red_cube') {
+    const dest = state.objects.find(o => o.id === 'blue_square');
+    if (!dest) return 'deliver red_cube';
+    if (dest.x === a.x && dest.y === a.y) return 'on blue_square — deliver complete';
+    return `carry red_cube to blue_square (${bearing(a.x, a.y, dest.x, dest.y)} dist ${manhattan(a, dest)})`;
+  }
+  const cube = state.objects.find(o => o.id === 'red_cube' && !o.held);
+  if (!cube) return 'red_cube unknown — explore';
+  if (cube.x === a.x && cube.y === a.y) return 'on red_cube — pickup';
+  return `find red_cube (${bearing(a.x, a.y, cube.x, cube.y)} dist ${manhattan(a, cube)})`;
+}
+
+function compileResult(state, stepCount) {
+  const a = state.agent;
+  // Visible objects: all non-held items, all destinations, walls within 3, pits within 3.
+  const visibleObjects = [];
+  for (const o of state.objects) {
+    if (o.held) continue;
+    visibleObjects.push({
+      label: o.label,
+      at: [o.x, o.y],
+      bearing: bearing(a.x, a.y, o.x, o.y),
+      dist: manhattan(a, { x: o.x, y: o.y }),
+    });
+  }
+  for (const w of LEVEL.walls) {
+    const d = manhattan(a, w);
+    if (d <= 3) visibleObjects.push({
+      label: 'wall',
+      at: [w.x, w.y],
+      bearing: bearing(a.x, a.y, w.x, w.y),
+      dist: d,
+    });
+  }
+  for (const p of LEVEL.pits) {
+    const d = manhattan(a, p);
+    if (d <= 3) visibleObjects.push({
+      label: 'pit',
+      at: [p.x, p.y],
+      bearing: bearing(a.x, a.y, p.x, p.y),
+      dist: d,
+    });
+  }
+  const compiled = {
+    pos: [a.x, a.y],
+    carrying: state.carrying,
+    step: stepCount,
+    moves_left: state.movesLeft,
+    objects: visibleObjects,
+    quest: 'pickup red_cube, then deliver to blue_square',
+    hint: generateHint(state),
+  };
+  return JSON.stringify(compiled);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ── OS LAYER ─────────────────────────────────────────────────────
+// Same kernel modules, different cartridge manifest.
+// ══════════════════════════════════════════════════════════════════
+
+let cartridge = null;
+let sampler = null;
+const SCAVENGER_MANIFEST_URL = '../../cart/game/scavenger/manifest.json';
+
+const WASM_BASE = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@2.4.0/esm';
+const CONFIG_PATHS = {
+  'single-thread/wllama.wasm': `${WASM_BASE}/single-thread/wllama.wasm`,
+  'multi-thread/wllama.wasm':  `${WASM_BASE}/multi-thread/wllama.wasm`,
+};
+
+const MODEL_REPO = 'LiquidAI/LFM2.5-350M-GGUF';
+const MODEL_FILE = 'LFM2.5-350M-Q4_K_M.gguf';
+const CHAT_TEMPLATE = (sys, user) =>
+  `<|startoftext|><|im_start|>system\n${sys}<|im_end|>\n<|im_start|>user\n${user}<|im_end|>\n<|im_start|>assistant\n`;
+
+const SYSTEM_PROMPT = `You are the LLM-OS kernel running the scavenger cartridge.
+
+QUEST: pickup red_cube, then deliver it to blue_square. Avoid walls and pits.
+
+After each action you receive a compiled state:
+- pos: [x, y] of the agent
+- carrying: what you hold (null or item id)
+- moves_left: remaining moves before partial-failure
+- objects: visible items with bearing (N/NE/E/SE/S/SW/W/NW) and Manhattan distance
+- hint: suggested next move
+
+Methods:
+- scavenger.move {"dir": "north"|"south"|"east"|"west"}  -- move one cell
+- scavenger.pickup {}                                     -- pick up item at current cell
+- scavenger.drop {}                                       -- drop carried item
+- scavenger.look {}                                       -- observe (free, no move cost)
+
+Strategy:
+1. If you see red_cube and aren't on it, navigate toward it (use bearing).
+2. When on red_cube, pickup.
+3. Navigate to blue_square.
+4. Stepping on blue_square while carrying red_cube auto-completes the delivery.
+Avoid pits (stepping on one ends the game with failure).`;
+
+const USER_GOAL = `Solve the scavenger quest. Pickup red_cube and deliver it to blue_square.`;
+
+// ── UI ───────────────────────────────────────────────────────────
+
+const $ = id => document.getElementById(id);
+const game = new ScavengerGame();
+let wllama = null;
+let prompt = '';
+let stepCount = 0;
+let autoPlaying = false;
+
+function renderBoard(state) {
+  const boardEl = $('board');
+  boardEl.innerHTML = '';
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell empty';
+      let glyph = '';
+      if (game.isWall(x, y)) { cell.classList.replace('empty', 'wall'); glyph = '#'; }
+      else if (game.isPit(x, y)) { cell.classList.replace('empty', 'pit'); glyph = '!'; }
+      else {
+        const obj = state.objects.find(o => !o.held && o.x === x && o.y === y);
+        if (obj) {
+          cell.classList.replace('empty', obj.id);
+          glyph = obj.id === 'red_cube' ? 'R' : obj.id === 'green_cube' ? 'G' : obj.id === 'blue_square' ? 'B' : '?';
+        }
+      }
+      if (state.agent.x === x && state.agent.y === y) {
+        cell.classList.add('agent');
+        glyph = state.carrying === 'red_cube' ? 'A·R' : 'A';
+      }
+      cell.textContent = glyph;
+      boardEl.appendChild(cell);
+    }
+  }
+  $('step').textContent = stepCount;
+  $('movesLeft').textContent = state.movesLeft;
+  $('carrying').textContent = state.carrying ?? '—';
+  $('gameStatus').textContent = state.gameOver ? state.outcome : 'in progress';
+}
+
+function appendTrace(cls, text) {
+  const el = $('trace');
+  const line = document.createElement('div');
+  line.className = cls;
+  line.textContent = text;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(msg) { $('status').textContent = msg; }
+
+// ── Model loading ────────────────────────────────────────────────
+
+$('btnLoad').onclick = async () => {
+  $('btnLoad').disabled = true;
+  $('progressWrap').style.display = 'block';
+
+  if (!crossOriginIsolated) {
+    setStatus('Warning: not cross-origin isolated. Run python3 serve.py');
+    appendTrace('error', 'SharedArrayBuffer may not be available. Run: python3 serve.py');
+  } else {
+    setStatus('Cross-origin isolated: OK. Initializing...');
+  }
+
+  try {
+    setStatus('Initializing WebAssembly...');
+    wllama = new Wllama(CONFIG_PATHS, { allowOffline: false });
+
+    setStatus(`Downloading ${MODEL_REPO}...`);
+    await wllama.loadModelFromHF(MODEL_REPO, MODEL_FILE, {
+      n_ctx: 4096,
+      n_batch: 128,
+      progressCallback: ({ loaded, total }) => {
+        const pct = total > 0 ? Math.round(loaded / total * 100) : 0;
+        $('progressFill').style.width = pct + '%';
+        $('progressText').textContent = `${(loaded/1e6).toFixed(1)} / ${(total/1e6).toFixed(1)} MB (${pct}%)`;
+      },
+    });
+
+    setStatus('Loading scavenger cartridge manifest...');
+    const manifest = await fetch(SCAVENGER_MANIFEST_URL).then(r => r.json());
+    cartridge = new Cartridge(manifest);
+
+    setStatus('Building token trie for grammar enforcement...');
+    await cartridge.build(s => wllama.tokenize(s));
+    sampler = new Sampler(wllama, cartridge.trie, { temp: 0.5, top_k: 0, top_p: 1.0 });
+
+    for (const op of cartridge.trie.opcodes) {
+      console.log(`[trie] opcode ${op.opcodeIndex}: "${op.string.trim()}" → [${op.tokens.join(',')}] (${op.tokens.length} tokens, label=${op.label})`);
+    }
+    const rootSize = cartridge.trie.root.children.size;
+
+    $('progressWrap').style.display = 'none';
+    setStatus('Model loaded. Ready to play!');
+
+    prompt = CHAT_TEMPLATE(SYSTEM_PROMPT, USER_GOAL);
+    game.reset();
+    stepCount = 0;
+    renderBoard(game.serialize());
+
+    $('btnStep').disabled = false;
+    $('btnAuto').disabled = false;
+    $('btnReset').disabled = false;
+
+    appendTrace('result', '--- Model loaded: ' + MODEL_REPO + ' ---');
+    appendTrace('result', `--- cartridge: ${cartridge.name}@${cartridge.version}, ${cartridge.trie.size()} opcodes, ${rootSize} first tokens ---`);
+
+  } catch (err) {
+    const msg = err.message || String(err);
+    if (msg.includes('typed array length') || msg.includes('memory')) {
+      setStatus('Memory error. Run python3 serve.py for COOP/COEP headers.');
+    } else {
+      setStatus('Error: ' + msg);
+    }
+    appendTrace('error', `Load failed: ${msg}`);
+    $('progressWrap').style.display = 'none';
+    $('btnLoad').disabled = false;
+    console.error(err);
+  }
+};
+
+async function generateConstrained(maxTokens = 200, allowedOpcodes = null) {
+  setStatus('Generating...');
+  const r = await sampler.generate(prompt, {
+    maxTokens, allowedOpcodes,
+    onProgress: ({ tokenCount }) => setStatus(`Generating... ${tokenCount} tok`),
+  });
+  if (r.fellBackSteps > 0) console.warn(`[sampler] ${r.fellBackSteps}/${r.tokens.length} steps used first-valid fallback`);
+  if (r.stalled) console.warn('[sampler] stalled — no valid next token');
+  console.log(`[sampler] output: ${JSON.stringify(r.text)} (opcode=${r.opcodeIndex}, ${r.tokens.length} tokens)`);
+  return r.text;
+}
+
+async function doStep() {
+  if (!wllama) return;
+  $('btnStep').disabled = true;
+  setStatus('Generating...');
+
+  try {
+    const t0 = performance.now();
+
+    // Phase control: which methods are legal in current state.
+    let allowed;
+    if (game.gameOver) {
+      allowed = cartridge.haltIndices();
+    } else if (stepCount === 0) {
+      allowed = cartridge.methodIndices('look');
+    } else {
+      allowed = cartridge.methodIndices('move', 'pickup', 'drop', 'look');
+    }
+
+    const output = await generateConstrained(200, allowed);
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+    if (!output.trim()) {
+      appendTrace('error', `[empty output after ${elapsed}s]`);
+      $('btnStep').disabled = false;
+      return;
+    }
+
+    const op = parseOpcode(output);
+    if (op.think) appendTrace('think', `[think] ${op.think}`);
+
+    if (op.type === 'call') {
+      const argsStr = JSON.stringify(op.args);
+      appendTrace('call', `<|call|>${op.cartridge}.${op.method} ${argsStr}<|/call|>`);
+      const dispatchResult = game.dispatch(op.method, op.args);
+      const compiledState = compileResult(game.serialize(), stepCount);
+      const resultBlock = formatResult(compiledState);
+      appendTrace('result', resultBlock.trim());
+      prompt += output + resultBlock;
+
+      // Sliding window
+      const basePrompt = CHAT_TEMPLATE(SYSTEM_PROMPT, USER_GOAL);
+      if (prompt.length > 6000) {
+        prompt = basePrompt + output + resultBlock;
+        console.log(`[sliding] prompt trimmed`);
+        sampler.resetKv();
+      }
+
+      stepCount++;
+      renderBoard(game.serialize());
+      setStatus(`Step ${stepCount} done (${elapsed}s, ${output.length} chars)`);
+    } else if (op.type === 'halt') {
+      prompt += output;
+      appendTrace('halt', `<|halt|>status=${op.status}`);
+      setStatus(`Halted: ${op.status} (${elapsed}s)`);
+      autoPlaying = false;
+      $('btnAuto').textContent = 'Auto Play';
+      $('btnStep').disabled = false;
+      return;
+    } else {
+      appendTrace('error', `[no opcode matched] raw: ${output.slice(0, 200)}`);
+      prompt += output;
+    }
+
+    $('btnStep').disabled = false;
+    if (autoPlaying && !game.gameOver) setTimeout(doStep, 100);
+
+  } catch (err) {
+    appendTrace('error', `Error: ${err.message}`);
+    setStatus('Error: ' + err.message);
+    $('btnStep').disabled = false;
+    autoPlaying = false;
+    console.error(err);
+  }
+}
+
+$('btnStep').onclick = doStep;
+$('btnAuto').onclick = () => {
+  autoPlaying = !autoPlaying;
+  $('btnAuto').textContent = autoPlaying ? 'Stop' : 'Auto Play';
+  if (autoPlaying) doStep();
+};
+$('btnReset').onclick = async () => {
+  autoPlaying = false;
+  $('btnAuto').textContent = 'Auto Play';
+  game.reset();
+  stepCount = 0;
+  if (sampler) await sampler.kvClear();
+  prompt = CHAT_TEMPLATE(SYSTEM_PROMPT, USER_GOAL);
+  $('trace').innerHTML = '';
+  appendTrace('result', '--- Quest reset ---');
+  renderBoard(game.serialize());
+  setStatus('Reset. Ready to play.');
+};
+
+renderBoard(game.serialize());
+</script>
+</body>
+</html>
