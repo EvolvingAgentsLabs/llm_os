@@ -1,0 +1,12 @@
+{
+  "name": "tetris",
+  "version": "0.1.0",
+  "description": "Turn-based Tetris. The LLM is the player: observe the board, choose moves, clear lines. Built-in handler.",
+  "allowed_opcodes": ["call"],
+  "preferred_tier": "local",
+  "methods": {
+    "move":    { "args_schema": "schemas/move.args.schema.json",  "description": "Execute an action: left, right, down, rotate, or drop. Returns updated board state." },
+    "observe": { "args_schema": "schemas/empty.args.schema.json", "description": "Return current board state without advancing the game." },
+    "reset":   { "args_schema": "schemas/empty.args.schema.json", "description": "Reset to a fresh game." }
+  }
+}

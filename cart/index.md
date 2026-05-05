@@ -5,6 +5,7 @@ Top-level cart directory. Each domain has its own index that lists the cartridge
 ## Domains
 
 - [`domestic`](domestic/index.md) — household-scoped cartridges (cooking, electrical).
+- [`game`](game/index.md) — interactive game cartridges (`tetris`).
 - [`io`](io/index.md) — physical-world bridges (`roclaw`).
 - [`sim`](sim/index.md) — deterministic fixtures for the e2e harness (`sim_world`).
 - [`system`](system/index.md) — meta cartridges (`demo`).

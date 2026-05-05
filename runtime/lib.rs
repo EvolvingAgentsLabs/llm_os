@@ -43,6 +43,7 @@ pub mod scheduler;
 pub mod schema_to_gbnf;
 pub mod subagent;
 pub mod swap;
+pub mod tetris;
 pub mod tool_parser;
 pub mod wasm_host;
 

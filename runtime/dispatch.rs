@@ -113,6 +113,7 @@ fn builtin_handler(cart: &Cartridge, method: &str, args: &Value) -> Option<Dispa
     match cart.name() {
         "roclaw" => Some(roclaw_handler::dispatch(method, args)),
         "sim_world" => Some(sim_world_handler::dispatch(method, args)),
+        "tetris" => Some(crate::tetris::dispatch(method, args)),
         "demo" => Some(crate::handlers::demo::dispatch(method, args)),
         "cooking" => Some(crate::handlers::cooking::dispatch(method, args)),
         "residential_electrical" => {
