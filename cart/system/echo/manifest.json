@@ -1,0 +1,24 @@
+{
+  "name": "echo",
+  "version": "0.1.0",
+  "description": "Smoke-test cartridge. Proves the kernel generalizes past Tetris: same trie/sampler/dispatch, different cartridge manifest, no code changes.",
+  "preferred_tier": "local",
+  "methods": {
+    "say": {
+      "summary": "Emit one of a small set of greeting strings.",
+      "args_schema": "schemas/say.args.schema.json",
+      "opcodes": [
+        "<|call|>echo.say {\"text\":\"hello\"}<|/call|>\n",
+        "<|call|>echo.say {\"text\":\"world\"}<|/call|>\n",
+        "<|call|>echo.say {\"text\":\"ok\"}<|/call|>\n"
+      ]
+    },
+    "ping": {
+      "summary": "Liveness probe. Always returns pong.",
+      "args_schema": "schemas/empty.args.schema.json",
+      "opcodes": [
+        "<|call|>echo.ping {}<|/call|>\n"
+      ]
+    }
+  }
+}
