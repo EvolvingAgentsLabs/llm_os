@@ -51,8 +51,8 @@
   button:hover { background: #333; border-color: #666; }
   button:disabled { opacity: 0.4; cursor: not-allowed; }
   button.primary { background: #004422; border-color: #00ff88; color: #00ff88; }
-  select { background: #222; color: #e0e0e0; border: 1px solid #444; padding: 6px 10px;
-           border-radius: 4px; font-family: inherit; font-size: 0.85em; }
+  .model-info { color: #888; font-size: 0.85em; padding: 6px 10px; border: 1px solid #333;
+                border-radius: 4px; background: #161616; }
 
   /* Progress */
   .progress { margin-top: 12px; }
@@ -68,10 +68,7 @@
 <div class="subtitle">A 350M-parameter LLM plays Tetris using grammar-constrained ISA opcodes. Runs in your browser via WebAssembly + JS-side GBNF enforcement.</div>
 
 <div class="controls">
-  <select id="modelSelect">
-    <option value="LiquidAI/LFM2.5-350M-GGUF">LFM 2.5 350M (Q4_K_M, 229MB)</option>
-    <option value="Qwen/Qwen2.5-0.5B-Instruct-GGUF">Qwen 2.5 0.5B (Q4_K_M, 397MB)</option>
-  </select>
+  <span class="model-info">Model: LiquidAI LFM 2.5 350M (Q4_K_M, 229MB)</span>
   <button id="btnLoad" class="primary">Load Model</button>
   <button id="btnStep" disabled>Step</button>
   <button id="btnAuto" disabled>Auto Play</button>
@@ -500,20 +497,20 @@ const CONFIG_PATHS = {
   'multi-thread/wllama.wasm': `${WASM_BASE}/multi-thread/wllama.wasm`,
 };
 
-// ── Model configs ────────────────────────────────────────────────
+// ── Model config ─────────────────────────────────────────────────
+// Single hardcoded model. LFM 2.5's tokenizer treats <|call|>, <|halt|>
+// etc. as singletons so the token-trie grammar (built by tokenizing the
+// OPCODE_STRINGS at load time) lines up with what the model emits in
+// top-K logits. Other tokenizers (Qwen, Gemma) tokenize these as
+// multi-token sequences and the trie's valid-next set rarely intersects
+// the top-K, forcing a fallback to deterministic-but-non-strategic
+// picks. To add a model, also widen getLogits() handling in
+// generateConstrained().
 
-const MODELS = {
-  'LiquidAI/LFM2.5-350M-GGUF': {
-    file: 'LFM2.5-350M-Q4_K_M.gguf',
-    chatTemplate: (sys, user) =>
-      `<|startoftext|><|im_start|>system\n${sys}<|im_end|>\n<|im_start|>user\n${user}<|im_end|>\n<|im_start|>assistant\n`,
-  },
-  'Qwen/Qwen2.5-0.5B-Instruct-GGUF': {
-    file: 'qwen2.5-0.5b-instruct-q4_k_m.gguf',
-    chatTemplate: (sys, user) =>
-      `<|im_start|>system\n${sys}<|im_end|>\n<|im_start|>user\n${user}<|im_end|>\n<|im_start|>assistant\n`,
-  },
-};
+const MODEL_REPO = 'LiquidAI/LFM2.5-350M-GGUF';
+const MODEL_FILE = 'LFM2.5-350M-Q4_K_M.gguf';
+const CHAT_TEMPLATE = (sys, user) =>
+  `<|startoftext|><|im_start|>system\n${sys}<|im_end|>\n<|im_start|>user\n${user}<|im_end|>\n<|im_start|>assistant\n`;
 
 // ── Boot prompt ──────────────────────────────────────────────────
 
@@ -550,7 +547,6 @@ let wllama = null;
 let prompt = '';
 let stepCount = 0;
 let autoPlaying = false;
-let modelRepo = '';
 
 function renderBoard(state) {
   const boardEl = $('board');
@@ -605,8 +601,6 @@ function setStatus(msg) { $('status').textContent = msg; }
 
 $('btnLoad').onclick = async () => {
   $('btnLoad').disabled = true;
-  modelRepo = $('modelSelect').value;
-  const modelCfg = MODELS[modelRepo];
 
   $('progressWrap').style.display = 'block';
 
@@ -621,8 +615,8 @@ $('btnLoad').onclick = async () => {
     setStatus('Initializing WebAssembly...');
     wllama = new Wllama(CONFIG_PATHS, { allowOffline: false });
 
-    setStatus(`Downloading ${modelRepo}...`);
-    await wllama.loadModelFromHF(modelRepo, modelCfg.file, {
+    setStatus(`Downloading ${MODEL_REPO}...`);
+    await wllama.loadModelFromHF(MODEL_REPO, MODEL_FILE, {
       n_ctx: 4096,
       n_batch: 128,
       progressCallback: ({ loaded, total }) => {
@@ -656,7 +650,7 @@ $('btnLoad').onclick = async () => {
     $('progressWrap').style.display = 'none';
     setStatus('Model loaded. Ready to play!');
 
-    prompt = modelCfg.chatTemplate(SYSTEM_PROMPT, USER_GOAL);
+    prompt = CHAT_TEMPLATE(SYSTEM_PROMPT, USER_GOAL);
     game.reset();
     stepCount = 0;
     renderBoard(game.state);
@@ -665,7 +659,7 @@ $('btnLoad').onclick = async () => {
     $('btnAuto').disabled = false;
     $('btnReset').disabled = false;
 
-    appendTrace('result', '--- Model loaded: ' + modelRepo + ' ---');
+    appendTrace('result', '--- Model loaded: ' + MODEL_REPO + ' ---');
     appendTrace('result', `--- crossOriginIsolated: ${crossOriginIsolated}, threads: ${navigator.hardwareConcurrency || '?'} ---`);
     appendTrace('result', `--- trie: ${OPCODE_STRINGS.length} opcodes, ${rootTokens.size} first tokens, token-level grammar ---`);
 
@@ -874,8 +868,7 @@ async function doStep() {
       prompt += output + `<|result|>${compiledState}<|/result|>\n`;
 
       // Sliding window: if prompt is too long, keep system+goal + last result only
-      const modelCfg = MODELS[modelRepo];
-      const basePrompt = modelCfg.chatTemplate(SYSTEM_PROMPT, USER_GOAL);
+      const basePrompt = CHAT_TEMPLATE(SYSTEM_PROMPT, USER_GOAL);
       const promptLen = prompt.length;
       if (promptLen > 6000) {
         prompt = basePrompt + output + `<|result|>${compiledState}<|/result|>\n`;
@@ -935,8 +928,7 @@ $('btnReset').onclick = async () => {
   stepCount = 0;
   kvCacheLen = 0;
   if (wllama) await wllama.kvClear();
-  const modelCfg = MODELS[modelRepo];
-  prompt = modelCfg.chatTemplate(SYSTEM_PROMPT, USER_GOAL);
+  prompt = CHAT_TEMPLATE(SYSTEM_PROMPT, USER_GOAL);
   $('trace').innerHTML = '';
   appendTrace('result', '--- Game reset ---');
   renderBoard(game.state);

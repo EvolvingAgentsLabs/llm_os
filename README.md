@@ -1,196 +1,76 @@
 # LLM-OS
 
-An operating system where the LLM **is** the CPU.
+An operating system where the LLM **is** the CPU. Pure WebAssembly — runs in your browser, no server, no install.
 
-14-opcode ISA enforced by GBNF grammar at decode time — wrong sequences are physically impossible to emit. Programs provide structured state to guide the LLM's decisions; the OS guarantees every output is a valid instruction.
+A 350M-parameter model plays Tetris by emitting grammar-constrained ISA opcodes. Wrong opcode sequences are physically impossible to emit — the OS layer guarantees output validity at every token, the way a CPU's instruction decoder rejects malformed instructions.
 
 Part of the [Evolving Agents](https://github.com/EvolvingAgentsLabs) ecosystem.
 
-## Demo: LLM Plays Tetris (Browser, 350M params)
-
-A 350M-parameter model plays Tetris entirely in your browser. No server — the model runs via WebAssembly with JS-side grammar enforcement.
-
-```bash
-cd demo/tetris-browser
-python3 serve.py    # Needed for COOP/COEP headers (SharedArrayBuffer)
-open http://localhost:8888
-```
-
-Click **Load Model** (downloads ~230MB once), then **Auto Play** to watch it play.
-
-This demo showcases the two-layer architecture:
-
-| Layer | Role | Code |
-|-------|------|------|
-| **OS** | Grammar enforcement (token trie), KV cache, dispatch | `generateConstrained()`, `doStep()` |
-| **Program** | Board analysis, hint generation, state compilation | `compileResult()`, `analyzeBoard()` |
-
-The OS guarantees every output is a valid `<|call|>tetris.move {...}<|/call|>`. The Program decides *what information* the LLM-CPU sees — not raw board strings, but compiled hints: pile height, holes, roughness, strategic suggestions.
-
-See [docs/tetris-architecture.md](docs/tetris-architecture.md) for the full design.
-
-## Install
+## Demo
 
 ```bash
 git clone https://github.com/EvolvingAgentsLabs/llm_os.git
-cd llm_os
-cargo build --release
+cd llm_os/demo/tetris-browser
+python3 serve.py    # COOP/COEP headers required for SharedArrayBuffer
 ```
 
-Prerequisites: Rust >= 1.75, a GGUF model (default: Qwen 2.5 3B Q4_K_M) or Ollama.
+Open <http://localhost:8888>, click **Load Model** (downloads ~230 MB once), then **Auto Play**. The model is [LiquidAI LFM 2.5 350M](https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF) at Q4_K_M.
 
-Optional: llama.cpp vendored at `runtime/vendor/llama.cpp` for in-process inference (feature `ffi-inference`).
-
-## Use
-
-### Ollama (quickest path — no llama.cpp build required)
-
-```bash
-# Install Ollama (https://ollama.com), then:
-ollama pull qwen3.5:2b
-
-cd llm_os/runtime && cargo build --release && cd ..
-
-# Single-call demo
-RUST_LOG=info ./runtime/target/release/iod \
-  --ollama --model qwen3.5:2b \
-  --grammar grammar/isa.gbnf --cart cart \
-  --goal "echo hello world" --budget 120 --max-predict 256
-
-# Multi-step demo (proves stop-and-inject loop)
-RUST_LOG=info ./runtime/target/release/iod \
-  --ollama --model qwen3.5:2b \
-  --grammar grammar/isa.gbnf --cart cart \
-  --goal "Echo 'LLM-OS' using demo.echo, then hash it using demo.hash. Write the results and halt." \
-  --budget 300 --max-predict 256
-```
-
-The Ollama backend does not enforce GBNF grammar at the sampler level — the model follows the ISA format through instruction-following alone. The daemon compensates with segment truncation, hallucination stripping, and repeat-call detection. See [docs/USAGE.md](docs/USAGE.md) for details.
-
-### llama-server (full GBNF grammar enforcement)
-
-```bash
-# Dev mode — in-process inference (default, no external server)
-bash scripts/dev.sh --model ~/models/qwen-2.5-3b-q4.gguf
-
-# Legacy mode — external llama-server (HTTP/SSE)
-iod --legacy-server --server http://localhost:8080 --grammar grammar/isa.gbnf
-
-# Dispatch a goal
-iod dispatch "summarize the file at ./grammar/isa-spec.md"
-
-# Inspect runtime state
-iod trace          # recent dispatches
-iod policy         # current capability mask
-iod cartridges     # mounted syscalls
-
-# Validate grammar fixtures
-iod validate       # 12/12 must pass
-
-# Release mode (Buildroot Pi 5 image)
-bash image/build.sh --model ~/models/qwen-2.5-3b-q4.gguf
-```
-
-## How it works
-
-The LLM generates a token stream following 14 opcodes. The I/O daemon (`iod`) drives inference, intercepts syscall opcodes, validates arguments against JSON schemas, executes cartridge handlers, and injects results back into the prompt. Four inference backends are supported:
-
-| Backend | Grammar | Stop sequences | Best for |
-|---|---|---|---|
-| **Ollama** (`--ollama`) | Instruction-following only | Daemon-side truncation | Quick start, any Ollama model |
-| **llama-server** (legacy) | GBNF at sampler level | SSE streaming stops | Full enforcement, dev |
-| **FFI** (v1.0, feature-gated) | GBNF in-process | Zero-latency | Production, Pi 5 |
-| **wllama** (browser) | JS token-trie (logit filtering) | Trie completion | Browser demo, zero-install |
-
-```
-POSIX                    LLM-OS
-────────────────────     ──────────────────────────────
-CPU instructions         14 opcodes (GBNF tokens)
-RAM                      KV cache
-MMU / type safety        GBNF grammar (sampler-enforced)
-Swap / paging            Deterministic KV pager (anchors + eviction)
-Ring 0 / Ring 3          WASM cartridge sandbox + logit bias
-Syscalls                 <|call|> + cartridge schemas
-Virtual memory           Grammar stack (push/pop sub-grammars)
-```
-
-Seven cartridges mounted: `game/tetris`, `system/summarize`, `system/demo`, `io/roclaw`, `sim/sim_world`, `domestic/cooking`, `domestic/residential-electrical`.
+Inference happens entirely in the browser via [@wllama/wllama](https://github.com/ngxson/wllama). Once the model is cached, no network traffic is needed to play.
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  iod (single binary)                                                │
-│    ├── iod.rs           (dispatch loop + inference backends)          │
-│    ├── dispatch.rs      (opcode → handler routing)                   │
-│    ├── parser.rs        (14-opcode ISA state machine)                │
-│    ├── cartridge.rs     (manifest + schema validation + arg hints)   │
-│    ├── sampler.rs       (in-process grammar stack — v1.0 FFI)        │
-│    ├── kv_pager.rs      (deterministic eviction with anchors)        │
-│    ├── wasm_host.rs     (wasmtime cartridge sandbox)                 │
-│    └── capability.rs    (logit bias + daemon-side reject)            │
-│                                                                       │
-│  ┌────────────────────────────────────────────────────────────┐       │
-│  │  Backends (one active per session):                        │       │
-│  │    Ollama      → /api/generate  (no grammar, easiest)      │       │
-│  │    llama-server → /v1/completions (GBNF grammar, SSE)      │       │
-│  │    libllama.a   → FFI in-process (feature-gated, v1.0)     │       │
-│  │    wllama      → WebAssembly + JS token-trie (browser)     │       │
-│  └────────────────────────────────────────────────────────────┘       │
-└──────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  PROGRAM LAYER (domain-specific intelligence)                   │
+│    analyzeBoard()   → metrics: heights, holes, roughness        │
+│    generateHint()   → strategy: "fill left well", "clear"       │
+│    compileResult()  → 60-80 token compiled state for the LLM    │
+└────────────────────────────────┬────────────────────────────────┘
+                                 │ injected as <|result|>…<|/result|>
+                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  OS LAYER (domain-agnostic infrastructure)                      │
+│    Token-trie grammar → only valid opcodes can be emitted       │
+│    KV cache manager   → incremental decode + sliding window     │
+│    Phase controller   → restricts opcodes by game state         │
+│    Dispatch loop      → parse opcode, execute, inject result    │
+└────────────────────────────────┬────────────────────────────────┘
+                                 │ opcode executed
+                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  GAME ENGINE (the cartridge)                                    │
+│    Tetris rules: collision, rotation, line clearing, gravity    │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-Ring model, ISA spec, kernel internals, and v1.0 details:
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+The OS guarantees every output is a valid `<|call|>tetris.move {...}<|/call|>`. The Program decides *what information* the LLM-CPU sees — not raw board strings, but compiled hints. A 350M model parsing a 400-token raw board makes random moves; the same model receiving a 70-token compiled state plays competent Tetris.
 
-ISA spec: [grammar/isa-spec.md](grammar/isa-spec.md)
-Operator guide: [docs/USAGE.md](docs/USAGE.md)
-Write a cartridge: [docs/TUTORIAL.md](docs/TUTORIAL.md)
-Improvement plan: [docs/IMPROVEMENT_PLAN.md](docs/IMPROVEMENT_PLAN.md)
+Full design: [docs/tetris-architecture.md](docs/tetris-architecture.md).
 
-## Feature flags
+## Why this works on a 350M model
 
-```toml
-[features]
-default = ["legacy-server", "legacy-handlers"]
+1. **Grammar enforcement** eliminates malformed output — invalid tokens are never sampled (OS layer). No retries, no rejection — physically prevented.
+2. **State compilation** reduces a 400-token raw board to a 70-token compiled state with column profile + strategic hints (Program layer, input-side).
+3. **Phase control** restricts which opcodes are available based on game state — the model can't `<|halt|>` mid-game.
+4. **Compiled hints** carry the strategic reasoning the small model can't produce on its own.
 
-# In-process inference via FFI to llama.cpp (requires vendored libllama)
-ffi-inference = []
+These compensate for what the model lacks. Without this stack, even a 3B model produces garbage on raw board state.
 
-# Legacy mode: HTTP/SSE to external llama-server
-legacy-server = []
+## ISA
 
-# WASM cartridge sandbox via wasmtime
-wasm-sandbox = ["dep:wasmtime"]
+The full 14-opcode ISA spec is in [grammar/isa-spec.md](grammar/isa-spec.md). The browser demo currently exercises a subset — `<|call|>tetris.{move,observe,reset}` and `<|halt|>status=...` — sufficient to demonstrate the OS/Program separation. Extending to other cartridges is a matter of writing a new `compileResult()` and adding the cartridge's opcode strings to the trie.
 
-# In-process Rust handlers (default until WASM is fully wired)
-legacy-handlers = []
+## Repo layout
+
 ```
-
-## Model requirements
-
-The runtime works with any GGUF model. For optimal performance with the ISA:
-
-| Model | Size | Speed (Pi 5) | Notes |
-|---|---|---|---|
-| Qwen 2.5 0.5B Q4_K_M | ~350 MB | ~15 tok/s | Dev/testing only |
-| **Qwen 3.5 2B** (Ollama) | ~2.7 GB | ~5 tok/s | **Tested end-to-end with Ollama backend** |
-| Qwen 2.5 3B Q4_K_M | ~1.7 GB | ~8 tok/s | Release sweet spot (llama-server) |
-| Qwen 2.5 7B Q4_K_M | ~4.1 GB | ~2-3 tok/s | Max quality ceiling |
-
-For best results, fine-tune with `scripts/rebuild_tokenizer.py` to ensure all 20 ISA tokens are single-token (uniform latency, exact capability enforcement).
-
-## Scripts
-
-| Script | Purpose |
-|---|---|
-| `scripts/dev.sh` | Development build + run |
-| `scripts/quickstart.sh` | Cold checkout to first task |
-| `scripts/validate_grammar.sh` | 12/12 grammar fixture validator |
-| `scripts/check_tokenizer.sh` | Tokenization parity + `--model` validation mode |
-| `scripts/rebuild_tokenizer.py` | Full ISA fine-tune pipeline (patch/validate/finetune/export) |
-| `scripts/promote_traces.py` | JSONL traces to DPO triples (self-hosting) |
+demo/tetris-browser/   # the entire OS — single self-contained HTML file
+cart/game/tetris/      # cartridge manifest + method specs + JSON schemas
+grammar/isa-spec.md    # 14-opcode ISA reference
+docs/tetris-architecture.md   # OS/Program layer thesis
+docs/legacy/           # historical Rust daemon design + release notes
+```
 
 ## License
 
-Apache 2.0
+Apache 2.0.
