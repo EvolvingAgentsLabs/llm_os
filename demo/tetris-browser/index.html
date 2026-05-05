@@ -507,7 +507,7 @@ $('btnLoad').onclick = async () => {
 
     setStatus(`Downloading ${modelRepo}...`);
     await wllama.loadModelFromHF(modelRepo, modelCfg.file, {
-      n_ctx: 2048,
+      n_ctx: 4096,
       n_batch: 128,
       progressCallback: ({ loaded, total }) => {
         const pct = total > 0 ? Math.round(loaded / total * 100) : 0;
@@ -575,16 +575,41 @@ $('btnLoad').onclick = async () => {
 // 3. Pick the highest-probability valid token
 // 4. Feed it back to the model
 
+// KV cache state — track what's already decoded to avoid re-processing
+let kvCacheLen = 0; // number of tokens already in the KV cache
+let allPromptTokens = []; // full token history for reference
+
 // allowedOpcodes: Set of opcode indices to allow (null = all)
 async function generateConstrained(maxTokens = 100, allowedOpcodes = null) {
-  const promptTokens = await wllama.tokenize(prompt);
-
   // Initialize sampling WITHOUT grammar (we enforce grammar ourselves)
   await wllama.samplingInit({ temp: 0.5, top_k: 0, top_p: 1.0 });
 
-  // Process prompt through the model
-  setStatus('Processing prompt...');
-  await wllama.decode(promptTokens, {});
+  // Tokenize the full prompt
+  const promptTokens = await wllama.tokenize(prompt);
+
+  // Only decode tokens that are NEW (not already in KV cache)
+  const newTokens = promptTokens.slice(kvCacheLen);
+
+  if (newTokens.length > 0) {
+    // Check if we'll exceed context window (4096 - room for generation)
+    const totalNeeded = kvCacheLen + newTokens.length + maxTokens;
+    if (totalNeeded > 3800) {
+      // Sliding window: reset KV cache, keep only system+goal + last result
+      console.log(`[kv] context near full (${kvCacheLen}+${newTokens.length}), resetting with sliding window`);
+      await wllama.kvClear();
+      kvCacheLen = 0;
+      // Re-decode full current prompt (already trimmed by doStep)
+      setStatus('Processing prompt (cache reset)...');
+      await wllama.decode(promptTokens, {});
+      kvCacheLen = promptTokens.length;
+    } else {
+      setStatus(`Processing ${newTokens.length} new tokens...`);
+      await wllama.decode(newTokens, {});
+      kvCacheLen = promptTokens.length;
+    }
+  } else {
+    setStatus('Generating (cached)...');
+  }
 
   const generatedTokens = []; // token IDs generated so far (within one opcode)
   let tokenCount = 0;
@@ -653,11 +678,14 @@ async function generateConstrained(maxTokens = 100, allowedOpcodes = null) {
     await wllama.decode([bestToken], {});
   }
 
+  // Update KV cache length to include generated tokens
+  kvCacheLen += generatedTokens.length;
+
   // Detokenize the complete output (returns Uint8Array, must decode to string)
   if (generatedTokens.length === 0) return '';
   const outputBytes = await wllama.detokenize(generatedTokens);
   const output = new TextDecoder().decode(outputBytes);
-  console.log('[trie] final output:', JSON.stringify(output), `(${tokenCount} tokens)`);
+  console.log('[trie] final output:', JSON.stringify(output), `(${tokenCount} tokens, kv=${kvCacheLen})`);
   return output;
 }
 
@@ -672,11 +700,17 @@ async function doStep() {
   try {
     const t0 = performance.now();
 
-    // For the first 10 steps, exclude halt opcodes (7,8,9) to force gameplay
-    const MIN_STEPS = 10;
-    let allowed = null;
-    if (stepCount < MIN_STEPS) {
-      allowed = new Set([0,1,2,3,4,5,6]); // calls only, no halt
+    // Opcode indices: 0=left, 1=right, 2=down, 3=rotate, 4=drop, 5=observe, 6=reset, 7-9=halt
+    // Step 0: reset/observe to init
+    // After that: ONLY moves until the board fills up (real Tetris game over)
+    // Halt only allowed when game.gameOver is true (pieces reached the top)
+    let allowed;
+    if (game.gameOver) {
+      allowed = new Set([7, 8, 9]); // game over — must halt
+    } else if (stepCount === 0) {
+      allowed = new Set([5, 6]); // observe or reset to init
+    } else {
+      allowed = new Set([0, 1, 2, 3, 4]); // moves only — play until game over
     }
     const output = await generateConstrained(200, allowed);
     const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
@@ -721,6 +755,16 @@ async function doStep() {
 
       // Inject result into prompt for next step
       prompt += output + `<|result|>${resultJson}<|/result|>\n`;
+
+      // Sliding window: if prompt is too long, keep system+goal + last result only
+      const modelCfg = MODELS[modelRepo];
+      const basePrompt = modelCfg.chatTemplate(SYSTEM_PROMPT, USER_GOAL);
+      const promptLen = prompt.length;
+      if (promptLen > 4000) {
+        // Keep base prompt + only the last result for context
+        prompt = basePrompt + output + `<|result|>${resultJson}<|/result|>\n`;
+        console.log(`[sliding] prompt trimmed from ${promptLen} to ${prompt.length} chars`);
+      }
 
       stepCount++;
       renderBoard(game.state);
@@ -768,11 +812,13 @@ $('btnAuto').onclick = () => {
   if (autoPlaying) doStep();
 };
 
-$('btnReset').onclick = () => {
+$('btnReset').onclick = async () => {
   autoPlaying = false;
   $('btnAuto').textContent = 'Auto Play';
   game.reset();
   stepCount = 0;
+  kvCacheLen = 0;
+  if (wllama) await wllama.kvClear();
   const modelCfg = MODELS[modelRepo];
   prompt = modelCfg.chatTemplate(SYSTEM_PROMPT, USER_GOAL);
   $('trace').innerHTML = '';
