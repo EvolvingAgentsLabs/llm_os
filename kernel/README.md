@@ -10,7 +10,7 @@ The kernel is what makes LLM-OS an OS rather than a chatbot: it enforces, at the
 |---|---|
 | [token_trie.js](token_trie.js) | Trie of token-ID sequences. Insert opcode token sequences; query valid next tokens at each generation step. |
 | [cartridge.js](cartridge.js) | Cartridge class: load a manifest, build the trie via the active model's tokenizer, expose method/halt opcode index sets. |
-| [sampler.js](sampler.js) | Wllama-driven sampler. Picks the highest-probability valid next token at each step; tracks fallback rate. |
+| [sampler.js](sampler.js) | Backend-agnostic sampler. Picks the highest-probability valid next token at each step; tracks fallback rate. Takes any Backend that exposes `tokenize`/`detokenize`/`decode`/`samplingInit`/`samplingAccept`/`getLogits`/`kvClear` — the raw wllama instance from `@wllama/wllama` is itself a valid Backend (no wrapper needed for the browser demo case). |
 | [dispatch.js](dispatch.js) | Parse generated text into `{type: "call", cartridge, method, args}` or `{type: "halt", status}`. |
 | [schemas/cartridge.manifest.schema.json](schemas/cartridge.manifest.schema.json) | JSON Schema for cartridge manifests. |
 | [index.js](index.js) | Re-exports. Single import point: `import { Cartridge, Sampler, parseOpcode } from './kernel/index.js'`. |
@@ -21,7 +21,7 @@ The kernel is what makes LLM-OS an OS rather than a chatbot: it enforces, at the
 import { Wllama } from 'https://cdn.jsdelivr.net/npm/@wllama/wllama@2.4.0/esm/index.js';
 import { Cartridge, Sampler, parseOpcode, formatResult } from './kernel/index.js';
 
-// 1. Load model
+// 1. Load model. The wllama instance IS a valid Backend.
 const wllama = new Wllama({ /* paths */ });
 await wllama.loadModelFromHF('LiquidAI/LFM2.5-350M-GGUF', 'LFM2.5-350M-Q4_K_M.gguf');
 
@@ -40,7 +40,7 @@ const manifest = {
 const cartridge = new Cartridge(manifest);
 await cartridge.build(s => wllama.tokenize(s));
 
-// 3. Sample
+// 3. Sample. Any Backend works — wllama, a worker proxy, a future FFI binding.
 const sampler = new Sampler(wllama, cartridge.trie);
 const allowed = cartridge.methodIndices('say');  // restrict to .say opcodes
 const result = await sampler.generate(prompt, { allowedOpcodes: allowed });
@@ -49,6 +49,32 @@ const result = await sampler.generate(prompt, { allowedOpcodes: allowed });
 const op = parseOpcode(result.text);
 // op = { type: 'call', cartridge: 'echo', method: 'say', args: { text: 'hello' }, ... }
 ```
+
+## Backend interface
+
+`Sampler` does not depend on `@wllama/wllama` directly. It calls a Backend
+that implements seven methods:
+
+```ts
+interface Backend {
+  tokenize(text: string): Promise<number[]>;
+  detokenize(tokens: number[]): Promise<Uint8Array>;
+  decode(tokens: number[], opts?: object): Promise<unknown>;
+  samplingInit(opts: { temp?: number; top_k?: number; top_p?: number }): Promise<unknown>;
+  samplingAccept(tokens: number[]): Promise<unknown>;
+  getLogits(idx: number): Promise<Array<{ token: number; p: number }>>;
+  kvClear(): Promise<unknown>;
+}
+```
+
+`@wllama/wllama` exposes exactly these methods, so it is a Backend by
+duck typing — pass the wllama instance directly as the first arg of
+`new Sampler(...)`.
+
+For deployments where wllama runs inside a Web Worker (e.g.
+`skillos_mini`'s `mobile/src/lib/llm/local/wllama_worker.ts`), implement
+the same interface as a thin proxy that forwards each call across the
+worker message channel. This keeps the kernel transport-agnostic.
 
 ## Manifest example
 
