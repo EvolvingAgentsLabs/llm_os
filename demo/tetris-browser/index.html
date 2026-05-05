@@ -285,6 +285,115 @@ class TetrisGame {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// ── PROGRAM LAYER ────────────────────────────────────────────────
+// The Program sits between the raw game state and the LLM-CPU.
+// It compiles raw board data into compact, decision-relevant info
+// that a 350M model can actually use. The OS layer (below) handles
+// grammar enforcement, KV cache, and dispatch mechanics.
+// ══════════════════════════════════════════════════════════════════
+
+function analyzeBoard(state) {
+  const board = state.board;
+
+  // Column heights (highest filled cell per column, from bottom)
+  const colHeights = Array(COLS).fill(0);
+  for (let c = 0; c < COLS; c++) {
+    for (let r = 0; r < ROWS; r++) {
+      if (board[r][c] !== '.') { colHeights[c] = ROWS - r; break; }
+    }
+  }
+
+  // Pile height (max column height)
+  const pileHeight = Math.max(...colHeights);
+
+  // Holes (empty cells with filled cells above them)
+  let holes = 0;
+  for (let c = 0; c < COLS; c++) {
+    let foundBlock = false;
+    for (let r = 0; r < ROWS; r++) {
+      if (board[r][c] !== '.') foundBlock = true;
+      else if (foundBlock) holes++;
+    }
+  }
+
+  // Surface roughness (sum of absolute height differences between adjacent columns)
+  let roughness = 0;
+  for (let c = 0; c < COLS - 1; c++) {
+    roughness += Math.abs(colHeights[c] - colHeights[c + 1]);
+  }
+
+  // Full rows about to clear
+  const fullRows = board.filter(r => !r.includes('.')).length;
+
+  // Flattest region (longest run of same-height adjacent columns)
+  let flatRun = 1, maxFlat = 1;
+  for (let c = 1; c < COLS; c++) {
+    if (Math.abs(colHeights[c] - colHeights[c-1]) <= 1) { flatRun++; maxFlat = Math.max(maxFlat, flatRun); }
+    else flatRun = 1;
+  }
+
+  // Wells (columns significantly lower than both neighbors)
+  const wells = [];
+  for (let c = 0; c < COLS; c++) {
+    const left = c > 0 ? colHeights[c-1] : 99;
+    const right = c < COLS-1 ? colHeights[c+1] : 99;
+    const depth = Math.min(left, right) - colHeights[c];
+    if (depth >= 2) wells.push({ col: c, depth });
+  }
+
+  return { pileHeight, colHeights, holes, roughness, fullRows, maxFlat, wells };
+}
+
+function generateHint(state, analysis) {
+  const { pileHeight, holes, roughness, wells, fullRows } = analysis;
+
+  if (fullRows > 0) return 'clear lines available';
+  if (holes > 2) return 'fill holes priority';
+  if (pileHeight > 15) return 'critical height drop fast';
+  if (pileHeight > 10) return 'keep low prefer drop';
+  if (wells.length > 0) return `fill well at col ${wells[0].col}`;
+  if (roughness > 6) return 'flatten surface';
+  return 'stack flat center';
+}
+
+// The core Program Layer function: compiles raw state into decision-relevant tokens
+function compileResult(state, stepCount) {
+  const a = analyzeBoard(state);
+  const cur = state.current;
+
+  // Compact height profile: encode 10 column heights as single digits (capped at 9)
+  const profile = a.colHeights.map(h => Math.min(h, 9)).join('');
+
+  const compiled = {
+    piece: cur.type,
+    x: cur.x,
+    rot: cur.rotation,
+    next: state.next,
+    pile: a.pileHeight,
+    holes: a.holes,
+    rough: a.roughness,
+    profile: profile,
+    score: state.score,
+    lines: state.lines,
+    step: stepCount,
+    hint: generateHint(state, a),
+  };
+
+  // Add urgency flag for high piles
+  if (a.pileHeight > 14) compiled.urgent = true;
+  // Add well info if present
+  if (a.wells.length > 0) compiled.well = a.wells[0].col;
+
+  return JSON.stringify(compiled);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ── OS LAYER ─────────────────────────────────────────────────────
+// Grammar enforcement (token trie), KV cache management, ISA parsing,
+// cartridge dispatch. Does NOT know about Tetris strategy.
+// ══════════════════════════════════════════════════════════════════
+
 // ── Token-Trie Grammar Engine ────────────────────────────────────
 // Workaround for wllama bug #168: grammar state machine doesn't advance.
 // Instead of text-matching (which fails because getVocab() returns empty
@@ -412,19 +521,26 @@ const SYSTEM_PROMPT = `You are the LLM-OS kernel. You execute tasks by emitting 
 
 Available cartridge: tetris
 Methods:
-- tetris.reset {}  -- start a new game
-- tetris.observe {}  -- see the current board state
 - tetris.move {"action":"left"}  -- move piece left
 - tetris.move {"action":"right"}  -- move piece right
 - tetris.move {"action":"down"}  -- move piece down one row
 - tetris.move {"action":"rotate"}  -- rotate piece clockwise
 - tetris.move {"action":"drop"}  -- hard drop piece to bottom
 
-The board is 10 wide, 20 tall. Pieces: I O T S Z J L.
-After each call you will receive a result with the board state.
-Use <|think|>...<|/think|> to reason. Use <|halt|>status=success when done.`;
+After each move you receive a compiled state:
+- piece: current piece type (I/O/T/S/Z/J/L)
+- x: piece column (0-9), rot: rotation (0-3)
+- next: next piece type
+- pile: height of the highest column
+- holes: empty cells trapped under blocks (bad, minimize)
+- rough: surface roughness (lower=flatter=better)
+- profile: 10-digit column heights (e.g. "0000032100")
+- hint: suggested strategy
+- well: column with a deep gap to fill (if any)
 
-const USER_GOAL = `Play tetris. Reset the game, observe the board, then make 10 moves trying to stack pieces neatly. After 10 moves, halt with success.`;
+Strategy: follow the hint. If hint says "drop" prefer drop. If "fill well at col N" move piece toward col N then drop. Keep pile low, minimize holes.`;
+
+const USER_GOAL = `Play tetris. Stack pieces to clear lines. Follow hints. Keep pile low.`;
 
 // ── UI ───────────────────────────────────────────────────────────
 
@@ -749,20 +865,20 @@ async function doStep() {
         }
       }
 
-      const resultJson = JSON.stringify(game.state);
+      // PROGRAM LAYER: compile raw state into decision-relevant info
+      const compiledState = compileResult(game.state, stepCount);
 
-      appendTrace('result', `<|result|>${resultJson.slice(0, 120)}${resultJson.length > 120 ? '...' : ''}<|/result|>`);
+      appendTrace('result', `<|result|>${compiledState}<|/result|>`);
 
-      // Inject result into prompt for next step
-      prompt += output + `<|result|>${resultJson}<|/result|>\n`;
+      // OS LAYER: inject compiled result into prompt for next step
+      prompt += output + `<|result|>${compiledState}<|/result|>\n`;
 
       // Sliding window: if prompt is too long, keep system+goal + last result only
       const modelCfg = MODELS[modelRepo];
       const basePrompt = modelCfg.chatTemplate(SYSTEM_PROMPT, USER_GOAL);
       const promptLen = prompt.length;
-      if (promptLen > 4000) {
-        // Keep base prompt + only the last result for context
-        prompt = basePrompt + output + `<|result|>${resultJson}<|/result|>\n`;
+      if (promptLen > 6000) {
+        prompt = basePrompt + output + `<|result|>${compiledState}<|/result|>\n`;
         console.log(`[sliding] prompt trimmed from ${promptLen} to ${prompt.length} chars`);
       }
 

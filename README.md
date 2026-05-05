@@ -1,9 +1,33 @@
-# llmos
+# LLM-OS
 
-An operating system where the LLM is the CPU.
-14-opcode ISA enforced by GBNF grammar at decode time — wrong sequences are physically impossible to emit.
+An operating system where the LLM **is** the CPU.
+
+14-opcode ISA enforced by GBNF grammar at decode time — wrong sequences are physically impossible to emit. Programs provide structured state to guide the LLM's decisions; the OS guarantees every output is a valid instruction.
 
 Part of the [Evolving Agents](https://github.com/EvolvingAgentsLabs) ecosystem.
+
+## Demo: LLM Plays Tetris (Browser, 350M params)
+
+A 350M-parameter model plays Tetris entirely in your browser. No server — the model runs via WebAssembly with JS-side grammar enforcement.
+
+```bash
+cd demo/tetris-browser
+python3 serve.py    # Needed for COOP/COEP headers (SharedArrayBuffer)
+open http://localhost:8888
+```
+
+Click **Load Model** (downloads ~230MB once), then **Auto Play** to watch it play.
+
+This demo showcases the two-layer architecture:
+
+| Layer | Role | Code |
+|-------|------|------|
+| **OS** | Grammar enforcement (token trie), KV cache, dispatch | `generateConstrained()`, `doStep()` |
+| **Program** | Board analysis, hint generation, state compilation | `compileResult()`, `analyzeBoard()` |
+
+The OS guarantees every output is a valid `<|call|>tetris.move {...}<|/call|>`. The Program decides *what information* the LLM-CPU sees — not raw board strings, but compiled hints: pile height, holes, roughness, strategic suggestions.
+
+See [docs/tetris-architecture.md](docs/tetris-architecture.md) for the full design.
 
 ## Install
 
