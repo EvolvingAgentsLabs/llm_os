@@ -93,13 +93,14 @@ bash image/build.sh --model ~/models/qwen-2.5-3b-q4.gguf
 
 ## How it works
 
-The LLM generates a token stream following 14 opcodes. The I/O daemon (`iod`) drives inference, intercepts syscall opcodes, validates arguments against JSON schemas, executes cartridge handlers, and injects results back into the prompt. Three inference backends are supported:
+The LLM generates a token stream following 14 opcodes. The I/O daemon (`iod`) drives inference, intercepts syscall opcodes, validates arguments against JSON schemas, executes cartridge handlers, and injects results back into the prompt. Four inference backends are supported:
 
 | Backend | Grammar | Stop sequences | Best for |
 |---|---|---|---|
 | **Ollama** (`--ollama`) | Instruction-following only | Daemon-side truncation | Quick start, any Ollama model |
 | **llama-server** (legacy) | GBNF at sampler level | SSE streaming stops | Full enforcement, dev |
 | **FFI** (v1.0, feature-gated) | GBNF in-process | Zero-latency | Production, Pi 5 |
+| **wllama** (browser) | JS token-trie (logit filtering) | Trie completion | Browser demo, zero-install |
 
 ```
 POSIX                    LLM-OS
@@ -113,7 +114,7 @@ Syscalls                 <|call|> + cartridge schemas
 Virtual memory           Grammar stack (push/pop sub-grammars)
 ```
 
-Six cartridges mounted: `system/summarize`, `system/demo`, `io/roclaw`, `sim/sim_world`, `domestic/cooking`, `domestic/residential-electrical`.
+Seven cartridges mounted: `game/tetris`, `system/summarize`, `system/demo`, `io/roclaw`, `sim/sim_world`, `domestic/cooking`, `domestic/residential-electrical`.
 
 ## Architecture
 
@@ -134,6 +135,7 @@ Six cartridges mounted: `system/summarize`, `system/demo`, `io/roclaw`, `sim/sim
 │  │    Ollama      → /api/generate  (no grammar, easiest)      │       │
 │  │    llama-server → /v1/completions (GBNF grammar, SSE)      │       │
 │  │    libllama.a   → FFI in-process (feature-gated, v1.0)     │       │
+│  │    wllama      → WebAssembly + JS token-trie (browser)     │       │
 │  └────────────────────────────────────────────────────────────┘       │
 └──────────────────────────────────────────────────────────────────┘
 ```
