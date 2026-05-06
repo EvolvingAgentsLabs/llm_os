@@ -255,6 +255,51 @@ function generateHint(state) {
   return `find red_cube (${bearing(a.x, a.y, cube.x, cube.y)} dist ${manhattan(a, cube)})`;
 }
 
+// ── Planner: obstacle-aware next-step ─────────────────────────────
+// BFS over the grid respecting walls and pits. Returns the first move
+// (n/s/e/w) of the shortest path from agent to the current subgoal —
+// or null if there's no viable path. The LLM ratifies a single move
+// rather than computing detours itself.
+
+function findNextStep(state) {
+  const a = state.agent;
+  // Subgoal selection: red_cube if not carrying yet, else blue_square.
+  let subgoal;
+  if (state.carrying === 'red_cube') {
+    subgoal = state.objects.find(o => o.id === 'blue_square');
+  } else {
+    subgoal = state.objects.find(o => o.id === 'red_cube' && !o.held);
+  }
+  if (!subgoal) return null;
+  if (subgoal.x === a.x && subgoal.y === a.y) {
+    return { dir: null, target: subgoal.id, on_target: true };
+  }
+
+  const wallSet = new Set(LEVEL.walls.map(w => `${w.x},${w.y}`));
+  const pitSet  = new Set(LEVEL.pits.map(p => `${p.x},${p.y}`));
+  const visited = new Set([`${a.x},${a.y}`]);
+  const queue = [{ x: a.x, y: a.y, firstMove: null }];
+
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    if (cur.x === subgoal.x && cur.y === subgoal.y) {
+      return { dir: cur.firstMove, target: subgoal.id, dist: cur.firstMove === null ? 0 : 1 };
+    }
+    for (const [dirName, [dx, dy]] of Object.entries(DIRS)) {
+      const nx = cur.x + dx, ny = cur.y + dy;
+      const key = `${nx},${ny}`;
+      if (visited.has(key)) continue;
+      if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) continue;
+      if (wallSet.has(key)) continue;
+      // Pits: avoid unless the subgoal IS the pit (it never is in this level).
+      if (pitSet.has(key) && !(nx === subgoal.x && ny === subgoal.y)) continue;
+      visited.add(key);
+      queue.push({ x: nx, y: ny, firstMove: cur.firstMove ?? dirName });
+    }
+  }
+  return null; // No path
+}
+
 function compileResult(state, stepCount) {
   const a = state.agent;
   // Visible objects: all non-held items, all destinations, walls within 3, pits within 3.
@@ -286,6 +331,7 @@ function compileResult(state, stepCount) {
       dist: d,
     });
   }
+  const next = findNextStep(state);
   const compiled = {
     pos: [a.x, a.y],
     carrying: state.carrying,
@@ -294,6 +340,11 @@ function compileResult(state, stepCount) {
     objects: visibleObjects,
     quest: 'pickup red_cube, then deliver to blue_square',
     hint: generateHint(state),
+    // Pre-computed next move (BFS, obstacle-aware). The LLM ratifies it.
+    // - dir: cardinal direction to emit, or null if on-target
+    // - on_target: true if agent is on the subgoal cell (do pickup/drop or step on)
+    // - target: the subgoal label (red_cube / blue_square)
+    next_step: next ?? { dir: null, target: null, no_path: true },
   };
   return JSON.stringify(compiled);
 }
@@ -326,8 +377,12 @@ After each action you receive a compiled state:
 - pos: [x, y] of the agent
 - carrying: what you hold (null or item id)
 - moves_left: remaining moves before partial-failure
-- objects: visible items with bearing (N/NE/E/SE/S/SW/W/NW) and Manhattan distance
-- hint: suggested next move
+- objects: visible items with bearing and Manhattan distance
+- hint: short natural-language guidance
+- next_step: pre-computed best move from BFS obstacle-aware pathfinder
+    dir: cardinal direction to emit (north/south/east/west) — null if on-target
+    on_target: true if you're on the subgoal cell
+    target: the subgoal label (red_cube or blue_square)
 
 Methods:
 - scavenger.move {"dir": "north"|"south"|"east"|"west"}  -- move one cell
@@ -335,12 +390,15 @@ Methods:
 - scavenger.drop {}                                       -- drop carried item
 - scavenger.look {}                                       -- observe (free, no move cost)
 
-Strategy:
-1. If you see red_cube and aren't on it, navigate toward it (use bearing).
-2. When on red_cube, pickup.
-3. Navigate to blue_square.
-4. Stepping on blue_square while carrying red_cube auto-completes the delivery.
-Avoid pits (stepping on one ends the game with failure).`;
+Strategy: ratify next_step. The Program already ran BFS around walls and
+pits and gave you the right move to make. Just emit it.
+
+  If next_step.on_target is true and you're not carrying: emit pickup.
+  If next_step.on_target is true and target=blue_square and you carry red_cube: it auto-completes (no action needed; the previous move did it).
+  Otherwise: emit move {"dir": next_step.dir}.
+
+Don't try to recompute paths. Don't move toward a bearing when the
+pathfinder said another direction — there's a wall in the way.`;
 
 const USER_GOAL = `Solve the scavenger quest. Pickup red_cube and deliver it to blue_square.`;
 
