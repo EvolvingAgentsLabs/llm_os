@@ -1,0 +1,20 @@
+{
+  "name": "llm-os-v3",
+  "version": "3.0.0",
+  "description": "LLM-OS v3 — Dataset generation for fine-tuning. Fast model (Gemini 3.1 Flash Lite) generates ISA traces to train smaller models.",
+  "type": "module",
+  "main": "kernel/index.js",
+  "bin": {
+    "llm-os": "bin/llm-os.js"
+  },
+  "scripts": {
+    "tetris": "node bin/llm-os.js --cart cart/game/tetris --task 'Play tetris. Observe the board, think about piece placement, use rotate/left/right to position, then drop.' --verbose",
+    "tetris-dataset": "node bin/llm-os.js --cart cart/game/tetris --task 'Play tetris. Observe, think about placement, rotate and position pieces, then drop.' --runs 10 --export-dataset dataset/tetris_traces.jsonl",
+    "tetris-steps": "node bin/llm-os.js --cart cart/game/tetris --task 'Play tetris. Observe, think, position, drop.' --runs 5 --export-dataset dataset/tetris_steps.jsonl --export-steps",
+    "terminal": "node bin/llm-os.js --cart cart/terminal --task 'Print HELLO WORLD to the center of the screen using terminal.print, then halt.' --verbose",
+    "help": "node bin/llm-os.js --help"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "text": {
+      "type": "string",
+      "description": "The text to print at current cursor position"
+    }
+  },
+  "required": ["text"],
+  "additionalProperties": false
+}

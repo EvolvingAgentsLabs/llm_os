@@ -1,0 +1,20 @@
+{
+  "name": "tetris",
+  "version": "2.0.0",
+  "description": "Turn-based Tetris. The LLM is the player: observe the board, choose moves, clear lines. No pre-computed hints — the LLM reasons from raw board state.",
+  "methods": {
+    "move": {
+      "summary": "Move the active piece. Returns updated board state.",
+      "args_schema": "schemas/move.args.schema.json"
+    },
+    "observe": {
+      "summary": "Return current board state without advancing the game.",
+      "args_schema": "schemas/empty.args.schema.json"
+    },
+    "reset": {
+      "summary": "Reset to a fresh game.",
+      "args_schema": "schemas/empty.args.schema.json"
+    }
+  },
+  "halt": ["success", "failure", "partial"]
+}

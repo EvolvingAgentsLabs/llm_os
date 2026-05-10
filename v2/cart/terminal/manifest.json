@@ -1,0 +1,41 @@
+{
+  "name": "terminal",
+  "version": "1.0.0",
+  "description": "Terminal I/O cartridge. Provides a character-cell screen (80x24) and keyboard input — the microcomputer model. The LLM reads keypresses and writes characters to screen positions, operating in a closed loop like a Z80 program.",
+  "ports": {
+    "stdin": {
+      "fd": 0,
+      "type": "keyboard",
+      "description": "Read keypresses. Returns {key, modifiers}."
+    },
+    "stdout": {
+      "fd": 1,
+      "type": "screen",
+      "description": "Write characters to screen positions. Payload: {x, y, text} or {x, y, char}."
+    },
+    "stderr": {
+      "fd": 2,
+      "type": "log",
+      "description": "Write log messages. Payload: {level, msg}."
+    }
+  },
+  "methods": {
+    "clear": {
+      "summary": "Clear the screen.",
+      "args_schema": "schemas/empty.args.schema.json"
+    },
+    "cursor": {
+      "summary": "Move the cursor to position (x, y).",
+      "args_schema": "schemas/cursor.args.schema.json"
+    },
+    "print": {
+      "summary": "Print text at cursor position and advance cursor.",
+      "args_schema": "schemas/print.args.schema.json"
+    },
+    "bell": {
+      "summary": "Ring the terminal bell.",
+      "args_schema": "schemas/empty.args.schema.json"
+    }
+  },
+  "halt": ["success", "failure", "partial"]
+}

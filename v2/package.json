@@ -1,0 +1,18 @@
+{
+  "name": "llm-os-v2",
+  "version": "2.0.0",
+  "description": "LLM-OS v2 — The LLM is the CPU. Full ISA execution via OpenRouter.",
+  "type": "module",
+  "main": "kernel/index.js",
+  "bin": {
+    "llm-os": "bin/llm-os.js"
+  },
+  "scripts": {
+    "tetris": "node bin/llm-os.js --cart cart/game/tetris --task 'Play tetris. Observe the board, reason about piece placement, and clear as many lines as possible. Use observe first, then make moves.' --verbose",
+    "terminal": "node bin/llm-os.js --cart cart/terminal --task 'Print HELLO WORLD to the center of the screen using terminal.print, then halt.' --verbose",
+    "help": "node bin/llm-os.js --help"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

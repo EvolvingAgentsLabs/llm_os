@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["left", "right", "down", "rotate", "drop"],
+      "description": "The action to perform on the active piece"
+    }
+  },
+  "required": ["action"],
+  "additionalProperties": false
+}

@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "properties": {
+    "x": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 79,
+      "description": "Column position (0-79)"
+    },
+    "y": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 23,
+      "description": "Row position (0-23)"
+    }
+  },
+  "required": ["x", "y"],
+  "additionalProperties": false
+}
