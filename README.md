@@ -1,3 +1,18 @@
+> [!IMPORTANT]
+> **Archived 2026-07-24 — superseded by [token-trie](https://github.com/EvolvingAgentsLabs/token-trie).**
+>
+> The live kernel (`token_trie.js`, `sampler.js`, `cartridge.js`, `dispatch.js`) is
+> vendored there byte-identically, with the browser demos and a UI around them.
+>
+> **This repo's description was false for months.** The Rust daemon (13,684 lines),
+> `grammar/isa.gbnf` and the Buildroot Pi 5 image were all deleted in April 2026.
+> `v2/` and `v3/` claim GBNF grammar passthrough they never implemented — they
+> constrain with stop sequences and regex.
+>
+> Not related to [llmos](https://github.com/EvolvingAgentsLabs/llmos), despite the name.
+
+---
+
 # LLM-OS
 
 An operating system where the LLM **is** the CPU. Part of the [Evolving Agents](https://github.com/EvolvingAgentsLabs) ecosystem.
